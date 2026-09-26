@@ -1,0 +1,186 @@
+version: "3.8"
+
+# =====================================================================================
+# DISTRIBUTED MOVIE STREAMING DATABASE — Postgres cluster
+# =====================================================================================
+# Maps directly to course concepts:
+#   - user-db-master/replica        -> PRIMARY-REPLICA REPLICATION (identity DB)
+#   - movie-shard-us-*, movie-shard-eu-*  -> HORIZONTAL SHARDING + REGION DISTRIBUTION
+#                                            each shard also has its own replica -> REPLICATION per shard
+#   - watchlist-shard-1/2           -> HORIZONTAL SHARDING (hash by userId)
+#   - review-shard-1/2              -> HORIZONTAL SHARDING (hash by movieId)
+#   - users_auth vs users_profile tables (see schema.sql) -> VERTICAL FRAGMENTATION
+#
+# All nodes use the bitnami/postgresql image because it supports real streaming
+# replication configured purely through environment variables (no manual pg_basebackup).
+# =====================================================================================
+
+services:
+
+  # ---------------- USER DATABASE (identity) — Primary/Replica replication ----------------
+  user-db-master:
+    image: bitnami/postgresql:16
+    container_name: user-db-master
+    environment:
+      POSTGRESQL_REPLICATION_MODE: master
+      POSTGRESQL_REPLICATION_USER: repl_user
+      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: user_db
+    ports: ["5401:5432"]
+    volumes:
+      - user_master_data:/bitnami/postgresql
+      - ./sql/user_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+
+  user-db-replica:
+    image: bitnami/postgresql:16
+    container_name: user-db-replica
+    environment:
+      POSTGRESQL_REPLICATION_MODE: slave
+      POSTGRESQL_REPLICATION_USER: repl_user
+      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
+      POSTGRESQL_MASTER_HOST: user-db-master
+      POSTGRESQL_MASTER_PORT_NUMBER: 5432
+      POSTGRESQL_PASSWORD: app_pass
+    ports: ["5402:5432"]
+    depends_on: [user-db-master]
+    networks: [ddbnet]
+
+  # ---------------- MOVIE CLUSTER — Shard 1 == "US region" ----------------
+  movie-shard-us-master:
+    image: bitnami/postgresql:16
+    container_name: movie-shard-us-master
+    environment:
+      POSTGRESQL_REPLICATION_MODE: master
+      POSTGRESQL_REPLICATION_USER: repl_user
+      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: movie_db
+    ports: ["5411:5432"]
+    volumes:
+      - movie_us_master_data:/bitnami/postgresql
+      - ./sql/movie_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+
+  movie-shard-us-replica:
+    image: bitnami/postgresql:16
+    container_name: movie-shard-us-replica
+    environment:
+      POSTGRESQL_REPLICATION_MODE: slave
+      POSTGRESQL_REPLICATION_USER: repl_user
+      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
+      POSTGRESQL_MASTER_HOST: movie-shard-us-master
+      POSTGRESQL_MASTER_PORT_NUMBER: 5432
+      POSTGRESQL_PASSWORD: app_pass
+    ports: ["5412:5432"]
+    depends_on: [movie-shard-us-master]
+    networks: [ddbnet]
+
+  # ---------------- MOVIE CLUSTER — Shard 2 == "EU region" ----------------
+  movie-shard-eu-master:
+    image: bitnami/postgresql:16
+    container_name: movie-shard-eu-master
+    environment:
+      POSTGRESQL_REPLICATION_MODE: master
+      POSTGRESQL_REPLICATION_USER: repl_user
+      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: movie_db
+    ports: ["5421:5432"]
+    volumes:
+      - movie_eu_master_data:/bitnami/postgresql
+      - ./sql/movie_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+
+  movie-shard-eu-replica:
+    image: bitnami/postgresql:16
+    container_name: movie-shard-eu-replica
+    environment:
+      POSTGRESQL_REPLICATION_MODE: slave
+      POSTGRESQL_REPLICATION_USER: repl_user
+      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
+      POSTGRESQL_MASTER_HOST: movie-shard-eu-master
+      POSTGRESQL_MASTER_PORT_NUMBER: 5432
+      POSTGRESQL_PASSWORD: app_pass
+    ports: ["5422:5432"]
+    depends_on: [movie-shard-eu-master]
+    networks: [ddbnet]
+
+  # ---------------- WATCHLIST — sharded by userId (no replicas, kept lean) ----------------
+  watchlist-shard-1:
+    image: bitnami/postgresql:16
+    container_name: watchlist-shard-1
+    environment:
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: watchlist_db
+    ports: ["5431:5432"]
+    volumes:
+      - ./sql/watchlist_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+
+  watchlist-shard-2:
+    image: bitnami/postgresql:16
+    container_name: watchlist-shard-2
+    environment:
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: watchlist_db
+    ports: ["5432:5432"]
+    volumes:
+      - ./sql/watchlist_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+
+  # ---------------- REVIEWS — sharded by movieId ----------------
+  review-shard-1:
+    image: bitnami/postgresql:16
+    container_name: review-shard-1
+    environment:
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: review_db
+    ports: ["5441:5432"]
+    volumes:
+      - ./sql/review_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+
+  review-shard-2:
+    image: bitnami/postgresql:16
+    container_name: review-shard-2
+    environment:
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: review_db
+    ports: ["5442:5432"]
+    volumes:
+      - ./sql/review_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+
+  # ---------------- API Gateway / Backend ----------------
+  api:
+    build: .
+    container_name: ddb-api
+    env_file: .env
+    ports: ["4000:4000"]
+    depends_on:
+      - user-db-master
+      - movie-shard-us-master
+      - movie-shard-eu-master
+      - watchlist-shard-1
+      - watchlist-shard-2
+      - review-shard-1
+      - review-shard-2
+    networks: [ddbnet]
+
+networks:
+  ddbnet:
+    driver: bridge
+
+volumes:
+  user_master_data:
+  movie_us_master_data:
+  movie_eu_master_data:
