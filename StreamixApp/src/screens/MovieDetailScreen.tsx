@@ -1,8 +1,19 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator, Alert, Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
-import YoutubePlayer, { YoutubeIframeRef } from 'react-native-youtube-iframe';
+import YoutubePlayer from 'react-native-youtube-iframe';
 import StarRating from '../components/StarRating';
 import {
   addToWatchlist, fetchMovie, fetchReviews, removeFromWatchlist, submitReview,
@@ -13,8 +24,8 @@ const PLAYER_HEIGHT = 220;
 const PLAYER_WIDTH = Dimensions.get('window').width;
 
 /**
- * In-app trailer player — stays inside Streamix with Play / Pause / Stop.
- * Uses TMDb YouTube trailer_key (full studio features need a licensed CDN).
+ * In-app trailer — YouTube's own controls handle play/pause.
+ * Uses TMDb trailer_key (full studio features need a licensed CDN).
  */
 function TrailerPlayer({
   trailerKey,
@@ -25,7 +36,6 @@ function TrailerPlayer({
   posterUrl?: string;
   autoplay?: boolean;
 }) {
-  const playerRef = useRef<YoutubeIframeRef>(null);
   const [active, setActive] = useState(!!autoplay && !!trailerKey);
   const [playing, setPlaying] = useState(!!autoplay && !!trailerKey);
 
@@ -44,78 +54,37 @@ function TrailerPlayer({
     setPlaying(true);
   };
 
-  const togglePlayPause = () => {
-    if (!active) {
-      start();
-      return;
-    }
-    setPlaying((p) => !p);
-  };
-
-  const stop = async () => {
-    setPlaying(false);
-    try {
-      await playerRef.current?.seekTo(0, true);
-    } catch {
-      // ignore
-    }
-    setActive(false);
-  };
-
   if (!active || !trailerKey) {
     return (
-      <View>
-        <Pressable style={styles.player} onPress={start}>
-          {posterUrl && <Image source={{ uri: posterUrl }} style={StyleSheet.absoluteFill} />}
-          <View style={styles.playerOverlay}>
-            <Text style={styles.playerIcon}>▶</Text>
-            <Text style={styles.playHint}>{trailerKey ? 'Tap to play trailer' : 'No trailer available'}</Text>
-          </View>
-        </Pressable>
-        <View style={styles.controls}>
-          <Pressable style={[styles.controlBtn, styles.controlPrimary]} onPress={start}>
-            <Text style={styles.controlText}>▶ Play</Text>
-          </Pressable>
-          <Pressable style={styles.controlBtn} disabled>
-            <Text style={[styles.controlText, styles.controlDisabled]}>⏸ Pause</Text>
-          </Pressable>
-          <Pressable style={styles.controlBtn} disabled>
-            <Text style={[styles.controlText, styles.controlDisabled]}>⏹ Stop</Text>
-          </Pressable>
+      <Pressable style={styles.player} onPress={start}>
+        {posterUrl && <Image source={{ uri: posterUrl }} style={StyleSheet.absoluteFill} />}
+        <View style={styles.playerOverlay}>
+          <Text style={styles.playerIcon}>▶</Text>
+          <Text style={styles.playHint}>{trailerKey ? 'Tap to play trailer' : 'No trailer available'}</Text>
         </View>
-      </View>
+      </Pressable>
     );
   }
 
   return (
-    <View>
-      <View style={styles.player}>
-        <YoutubePlayer
-          ref={playerRef}
-          height={PLAYER_HEIGHT}
-          width={PLAYER_WIDTH}
-          play={playing}
-          videoId={trailerKey}
-          onChangeState={onStateChange}
-          webViewProps={{
-            allowsInlineMediaPlayback: true,
-            mediaPlaybackRequiresUserAction: false,
-          }}
-          initialPlayerParams={{
-            preventFullScreen: false,
-            modestbranding: true,
-            rel: false,
-          }}
-        />
-      </View>
-      <View style={styles.controls}>
-        <Pressable style={[styles.controlBtn, styles.controlPrimary]} onPress={togglePlayPause}>
-          <Text style={styles.controlText}>{playing ? '⏸ Pause' : '▶ Play'}</Text>
-        </Pressable>
-        <Pressable style={styles.controlBtn} onPress={stop}>
-          <Text style={styles.controlText}>⏹ Stop</Text>
-        </Pressable>
-      </View>
+    <View style={styles.player}>
+      <YoutubePlayer
+        height={PLAYER_HEIGHT}
+        width={PLAYER_WIDTH}
+        play={playing}
+        videoId={trailerKey}
+        onChangeState={onStateChange}
+        webViewProps={{
+          allowsInlineMediaPlayback: true,
+          mediaPlaybackRequiresUserAction: false,
+        }}
+        initialPlayerParams={{
+          preventFullScreen: false,
+          modestbranding: true,
+          rel: false,
+          controls: true,
+        }}
+      />
     </View>
   );
 }
@@ -146,13 +115,21 @@ export default function MovieDetailScreen({ route }: any) {
   };
 
   const postReview = async () => {
-    if (!rating) return Alert.alert('Pick a star rating first');
+    if (!rating) return Alert.alert('Pick a star rating first', 'Tap the stars above, then post.');
     try {
-      const created = await submitReview(contentId, rating, comment);
+      const created = await submitReview(Number(contentId), rating, comment);
       setReviews((prev) => [created, ...prev]);
-      setRating(0); setComment('');
-    } catch {
-      Alert.alert('Please sign in', 'You need an account to leave a review.');
+      setRating(0);
+      setComment('');
+      Alert.alert('Posted', 'Your review was saved.');
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const msg = err?.response?.data?.error || err?.message || 'Could not submit review';
+      if (status === 401) {
+        Alert.alert('Please sign in', 'Your session expired — sign out and sign in again.');
+      } else {
+        Alert.alert('Review failed', msg);
+      }
     }
   };
 
@@ -161,7 +138,17 @@ export default function MovieDetailScreen({ route }: any) {
   }
 
   return (
-    <ScrollView style={styles.container} nestedScrollEnabled>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={80}
+    >
+      <ScrollView
+        style={styles.container}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
       <TrailerPlayer
         key={`${movie.trailer_key}-${playNonce}`}
         trailerKey={movie.trailer_key}
@@ -204,6 +191,7 @@ export default function MovieDetailScreen({ route }: any) {
 
         <Text style={styles.sectionHeading}>Ratings & Reviews</Text>
         <View style={styles.reviewForm}>
+          <Text style={styles.ratingHint}>Tap stars to rate ({rating || 0}/5)</Text>
           <StarRating value={rating} onChange={setRating} />
           <TextInput
             style={styles.commentInput}
@@ -212,6 +200,9 @@ export default function MovieDetailScreen({ route }: any) {
             value={comment}
             onChangeText={setComment}
             multiline
+            editable
+            textAlignVertical="top"
+            blurOnSubmit={false}
           />
           <Pressable style={styles.submitBtn} onPress={postReview}>
             <Text style={styles.submitText}>Post Review</Text>
@@ -219,13 +210,14 @@ export default function MovieDetailScreen({ route }: any) {
         </View>
 
         {reviews.map((r) => (
-          <View key={r.id} style={styles.reviewItem}>
-            <StarRating value={r.rating} size={14} />
+          <View key={String(r.id)} style={styles.reviewItem}>
+            <StarRating value={Number(r.rating)} size={14} />
             {!!r.comment && <Text style={styles.reviewComment}>{r.comment}</Text>}
           </View>
         ))}
       </View>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -240,27 +232,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     overflow: 'hidden',
   },
-  controls: {
-    flexDirection: 'row',
-    backgroundColor: colors.surface,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    gap: 8,
-  },
-  controlBtn: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 6,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  controlPrimary: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  controlText: { color: colors.text, fontWeight: '700' },
-  controlDisabled: { color: colors.textMuted },
   playerOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.35)',
@@ -301,6 +272,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   reviewForm: { backgroundColor: colors.surface, borderRadius: 8, padding: spacing.md },
+  ratingHint: { color: colors.textMuted, marginBottom: spacing.sm, fontSize: 13 },
   commentInput: {
     color: colors.text,
     borderColor: colors.border,
@@ -308,8 +280,9 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     padding: spacing.sm,
     marginTop: spacing.sm,
-    minHeight: 60,
+    minHeight: 80,
     textAlignVertical: 'top',
+    backgroundColor: colors.card,
   },
   submitBtn: {
     backgroundColor: colors.primary,

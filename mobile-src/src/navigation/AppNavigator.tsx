@@ -48,7 +48,7 @@ function MainTabs() {
       <Tab.Screen name="Home" component={HomeScreen} options={{ title: 'STREAMIX' }} />
       <Tab.Screen name="Search" component={SearchScreen} />
       <Tab.Screen name="Watchlist" component={WatchlistScreen} />
-      <Tab.Screen name="Profile" component={ProfileScreen} />
+      <Tab.Screen name="Profile" component={ProfileScreen} options={{ headerShown: false }} />
     </Tab.Navigator>
   );
 }
