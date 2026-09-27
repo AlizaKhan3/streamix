@@ -9,8 +9,9 @@ router.post('/register', async (req, res) => {
   const { email, password, fullName } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
 
-  const client = await userWriteConn().connect();
+  let client;
   try {
+    client = await userWriteConn().connect();
     await client.query('BEGIN');
     const passwordHash = await bcrypt.hash(password, 10);
     const authResult = await client.query(
@@ -27,12 +28,14 @@ router.post('/register', async (req, res) => {
     const token = jwt.sign({ sub: user.user_id, email: user.email, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.status(201).json({ token, user });
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
+    }
     if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
     console.error(err);
     res.status(500).json({ error: 'Registration failed' });
   } finally {
-    client.release();
+    if (client) client.release();
   }
 });
 

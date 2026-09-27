@@ -1,5 +1,3 @@
-version: "3.8"
-
 # =====================================================================================
 # DISTRIBUTED MOVIE STREAMING DATABASE — Postgres cluster
 # =====================================================================================
@@ -11,15 +9,15 @@ version: "3.8"
 #   - review-shard-1/2              -> HORIZONTAL SHARDING (hash by movieId)
 #   - users_auth vs users_profile tables (see schema.sql) -> VERTICAL FRAGMENTATION
 #
-# All nodes use the bitnami/postgresql image because it supports real streaming
-# replication configured purely through environment variables (no manual pg_basebackup).
+# Uses bitnamilegacy/postgresql (Bitnami moved free PG 16 tags off bitnami/postgresql).
+# Replication is configured via environment variables (no manual pg_basebackup).
 # =====================================================================================
 
 services:
 
   # ---------------- USER DATABASE (identity) — Primary/Replica replication ----------------
   user-db-master:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: user-db-master
     environment:
       POSTGRESQL_REPLICATION_MODE: master
@@ -35,7 +33,7 @@ services:
     networks: [ddbnet]
 
   user-db-replica:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: user-db-replica
     environment:
       POSTGRESQL_REPLICATION_MODE: slave
@@ -50,7 +48,7 @@ services:
 
   # ---------------- MOVIE CLUSTER — Shard 1 == "US region" ----------------
   movie-shard-us-master:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: movie-shard-us-master
     environment:
       POSTGRESQL_REPLICATION_MODE: master
@@ -66,7 +64,7 @@ services:
     networks: [ddbnet]
 
   movie-shard-us-replica:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: movie-shard-us-replica
     environment:
       POSTGRESQL_REPLICATION_MODE: slave
@@ -81,7 +79,7 @@ services:
 
   # ---------------- MOVIE CLUSTER — Shard 2 == "EU region" ----------------
   movie-shard-eu-master:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: movie-shard-eu-master
     environment:
       POSTGRESQL_REPLICATION_MODE: master
@@ -97,7 +95,7 @@ services:
     networks: [ddbnet]
 
   movie-shard-eu-replica:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: movie-shard-eu-replica
     environment:
       POSTGRESQL_REPLICATION_MODE: slave
@@ -112,7 +110,7 @@ services:
 
   # ---------------- WATCHLIST — sharded by userId (no replicas, kept lean) ----------------
   watchlist-shard-1:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: watchlist-shard-1
     environment:
       POSTGRESQL_USERNAME: app
@@ -124,7 +122,7 @@ services:
     networks: [ddbnet]
 
   watchlist-shard-2:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: watchlist-shard-2
     environment:
       POSTGRESQL_USERNAME: app
@@ -137,7 +135,7 @@ services:
 
   # ---------------- REVIEWS — sharded by movieId ----------------
   review-shard-1:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: review-shard-1
     environment:
       POSTGRESQL_USERNAME: app
@@ -149,7 +147,7 @@ services:
     networks: [ddbnet]
 
   review-shard-2:
-    image: bitnami/postgresql:16
+    image: bitnamilegacy/postgresql:16
     container_name: review-shard-2
     environment:
       POSTGRESQL_USERNAME: app
@@ -165,9 +163,32 @@ services:
     build: .
     container_name: ddb-api
     env_file: .env
+    # Override .env localhost hosts — inside Docker, use service names + internal 5432
+    environment:
+      USER_DB_MASTER_HOST: user-db-master
+      USER_DB_MASTER_PORT: "5432"
+      USER_DB_REPLICA_HOST: user-db-replica
+      USER_DB_REPLICA_PORT: "5432"
+      MOVIE_SHARD0_MASTER_HOST: movie-shard-us-master
+      MOVIE_SHARD0_MASTER_PORT: "5432"
+      MOVIE_SHARD0_REPLICA_HOST: movie-shard-us-replica
+      MOVIE_SHARD0_REPLICA_PORT: "5432"
+      MOVIE_SHARD1_MASTER_HOST: movie-shard-eu-master
+      MOVIE_SHARD1_MASTER_PORT: "5432"
+      MOVIE_SHARD1_REPLICA_HOST: movie-shard-eu-replica
+      MOVIE_SHARD1_REPLICA_PORT: "5432"
+      WATCHLIST_SHARD0_HOST: watchlist-shard-1
+      WATCHLIST_SHARD0_PORT: "5432"
+      WATCHLIST_SHARD1_HOST: watchlist-shard-2
+      WATCHLIST_SHARD1_PORT: "5432"
+      REVIEW_SHARD0_HOST: review-shard-1
+      REVIEW_SHARD0_PORT: "5432"
+      REVIEW_SHARD1_HOST: review-shard-2
+      REVIEW_SHARD1_PORT: "5432"
     ports: ["4000:4000"]
     depends_on:
       - user-db-master
+      - user-db-replica
       - movie-shard-us-master
       - movie-shard-eu-master
       - watchlist-shard-1
