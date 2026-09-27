@@ -1,13 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, Pressable, StyleSheet, Text, TextInput, View,
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import MovieCard from '../components/MovieCard';
 import { useWatchlist } from '../context/WatchlistContext';
 import { searchCatalog } from '../services/api';
 import { colors, spacing } from '../theme/colors';
 
-/** Chip label → TMDb genre name stored in DB */
 const GENRES: { label: string; value: string }[] = [
   { label: 'Action', value: 'Action' },
   { label: 'Comedy', value: 'Comedy' },
@@ -18,16 +23,24 @@ const GENRES: { label: string; value: string }[] = [
 ];
 
 export default function SearchScreen({ navigation }: any) {
-  const { has } = useWatchlist();
+  const watchlist = useWatchlist();
+  const inList = (id: number | string) =>
+    typeof watchlist?.has === 'function' ? watchlist.has(id) : false;
+
   const [query, setQuery] = useState('');
   const [genre, setGenre] = useState<string | null>(null);
   const [results, setResults] = useState<any[]>([]);
   const [meta, setMeta] = useState<{ shardsQueried?: number; total?: number } | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [searched, setSearched] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestId = useRef(0);
+  const inputRef = useRef<TextInput>(null);
+  const genreRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    genreRef.current = genre;
+  }, [genre]);
 
   const runSearch = useCallback(async (q: string, g: string | null) => {
     const id = ++requestId.current;
@@ -42,20 +55,16 @@ export default function SearchScreen({ navigation }: any) {
       if (id !== requestId.current) return;
       setResults(Array.isArray(res?.results) ? res.results : []);
       setMeta({ shardsQueried: res?.shardsQueried, total: res?.total });
-      setSearched(true);
     } catch (err: any) {
       if (id !== requestId.current) return;
-      console.warn('search failed', err?.message || err);
       setResults([]);
       setMeta(null);
       setError(err?.response?.data?.error || err?.message || 'Search failed — is the API running?');
-      setSearched(true);
     } finally {
       if (id === requestId.current) setLoading(false);
     }
   }, []);
 
-  // Load popular titles when the screen opens
   useEffect(() => {
     runSearch('', null);
   }, [runSearch]);
@@ -63,7 +72,9 @@ export default function SearchScreen({ navigation }: any) {
   const onChangeQuery = (text: string) => {
     setQuery(text);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => runSearch(text, genre), 400);
+    debounceRef.current = setTimeout(() => {
+      runSearch(text, genreRef.current);
+    }, 450);
   };
 
   const onPickGenre = (value: string) => {
@@ -73,10 +84,11 @@ export default function SearchScreen({ navigation }: any) {
     runSearch(query, next);
   };
 
-  return (
-    <View style={styles.container}>
+  const header = (
+    <View>
       <View style={styles.searchRow}>
         <TextInput
+          ref={inputRef}
           style={styles.input}
           placeholder="Search titles, actors, directors..."
           placeholderTextColor={colors.textMuted}
@@ -85,10 +97,20 @@ export default function SearchScreen({ navigation }: any) {
           onSubmitEditing={() => runSearch(query, genre)}
           returnKeyType="search"
           autoCorrect={false}
-          clearButtonMode="while-editing"
+          autoCapitalize="none"
+          editable
+          selectTextOnFocus={false}
+          blurOnSubmit={false}
+          keyboardAppearance="dark"
         />
-        <Pressable style={styles.searchBtn} onPress={() => runSearch(query, genre)}>
-          <Text style={styles.searchBtnText}>Search</Text>
+        <Pressable
+          style={styles.searchBtn}
+          onPress={() => {
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+            runSearch(query, genre);
+          }}
+        >
+          <Text style={styles.searchBtnText}>Go</Text>
         </Pressable>
       </View>
 
@@ -106,76 +128,93 @@ export default function SearchScreen({ navigation }: any) {
 
       {meta?.shardsQueried != null && (
         <Text style={styles.metaText}>
-          Scatter-gather across {meta.shardsQueried} movie shard(s)
-          {meta.total != null ? ` · ${meta.total} match${meta.total === 1 ? '' : 'es'}` : ''}
-          {results.length ? ` · showing ${results.length}` : ''}
+          Scatter-gather across {meta.shardsQueried} shard(s)
+          {meta.total != null ? ` · ${meta.total} matches` : ''}
         </Text>
       )}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
       {loading ? (
-        <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.lg }} />
-      ) : (
-        <FlatList
-          data={results}
-          keyExtractor={(item) => String(item.content_id)}
-          numColumns={3}
-          contentContainerStyle={{ padding: spacing.md, flexGrow: 1 }}
-          ListEmptyComponent={
-            searched ? (
-              <Text style={styles.empty}>
-                {error ? 'Could not load results.' : 'No movies found. Try another title or genre.'}
-              </Text>
-            ) : null
-          }
-          renderItem={({ item }) => (
-            <View style={{ margin: 4 }}>
-              <MovieCard
-                title={item.title}
-                posterUrl={item.poster_path}
-                rating={item.rating_avg}
-                width={100}
-                inWatchlist={has(item.content_id)}
-                onPress={() => navigation.navigate('MovieDetail', { contentId: item.content_id })}
-              />
-            </View>
-          )}
-        />
-      )}
+        <ActivityIndicator color={colors.primary} style={{ marginVertical: spacing.md }} />
+      ) : null}
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
+      <FlatList
+        data={results}
+        keyExtractor={(item) => String(item.content_id)}
+        numColumns={3}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="none"
+        ListHeaderComponent={header}
+        contentContainerStyle={styles.listContent}
+        ListEmptyComponent={
+          !loading ? (
+            <Text style={styles.empty}>
+              {error ? 'Could not load results.' : 'No movies found. Try another title or genre.'}
+            </Text>
+          ) : null
+        }
+        renderItem={({ item }) => (
+          <View style={styles.cardWrap}>
+            <MovieCard
+              title={item.title}
+              posterUrl={item.poster_path}
+              rating={item.rating_avg}
+              width={100}
+              inWatchlist={inList(item.content_id)}
+              onPress={() => navigation.navigate('MovieDetail', { contentId: item.content_id })}
+            />
+          </View>
+        )}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background, paddingTop: spacing.md },
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  listContent: {
+    paddingBottom: spacing.xl,
+    flexGrow: 1,
+  },
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginHorizontal: spacing.md,
-    gap: 8,
+    marginTop: spacing.md,
   },
   input: {
     flex: 1,
+    minHeight: 48,
     backgroundColor: colors.surface,
-    color: colors.text,
-    borderRadius: 6,
-    padding: spacing.md,
+    color: '#FFFFFF',
+    borderRadius: 8,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
     borderWidth: 1,
     borderColor: colors.border,
+    fontSize: 16,
+    marginRight: 8,
   },
   searchBtn: {
     backgroundColor: colors.primary,
-    borderRadius: 6,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    borderRadius: 8,
+    minHeight: 48,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  searchBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  searchBtnText: { color: '#fff', fontWeight: '800', fontSize: 14 },
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     paddingHorizontal: spacing.md,
     marginTop: spacing.md,
-    gap: 8,
   },
   chip: {
     borderWidth: 1,
@@ -183,12 +222,25 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingVertical: 6,
     paddingHorizontal: 14,
+    marginRight: 8,
+    marginBottom: 8,
   },
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { color: colors.textMuted, fontSize: 13 },
   chipTextActive: { color: '#fff', fontWeight: '700' },
-  metaText: { color: colors.textMuted, fontSize: 11, marginTop: spacing.sm, marginHorizontal: spacing.md },
-  errorText: { color: colors.primary, fontSize: 12, marginTop: spacing.xs, marginHorizontal: spacing.md },
+  metaText: {
+    color: colors.textMuted,
+    fontSize: 11,
+    marginTop: spacing.xs,
+    marginHorizontal: spacing.md,
+  },
+  errorText: {
+    color: colors.primary,
+    fontSize: 12,
+    marginTop: spacing.xs,
+    marginHorizontal: spacing.md,
+  },
+  cardWrap: { margin: 4, marginLeft: spacing.md },
   empty: {
     color: colors.textMuted,
     textAlign: 'center',
