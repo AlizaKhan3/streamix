@@ -3,6 +3,7 @@ import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from './src/context/AuthContext';
 import { RegionProvider } from './src/context/RegionContext';
+import { WatchlistProvider } from './src/context/WatchlistContext';
 import AppNavigator from './src/navigation/AppNavigator';
 
 export default function App() {
@@ -11,7 +12,9 @@ export default function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0B0B0B" />
       <RegionProvider>
         <AuthProvider>
-          <AppNavigator />
+          <WatchlistProvider>
+            <AppNavigator />
+          </WatchlistProvider>
         </AuthProvider>
       </RegionProvider>
     </SafeAreaProvider>

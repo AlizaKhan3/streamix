@@ -13,10 +13,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import StarRating from '../components/StarRating';
+import { useWatchlist } from '../context/WatchlistContext';
 import {
-  addToWatchlist, fetchMovie, fetchReviews, removeFromWatchlist, submitReview,
+  fetchMovie, fetchReviews, submitReview,
 } from '../services/api';
 import { colors, spacing } from '../theme/colors';
 
@@ -91,12 +93,14 @@ function TrailerPlayer({
 
 export default function MovieDetailScreen({ route }: any) {
   const { contentId, autoplay } = route.params;
+  const { has, toggle, refresh } = useWatchlist();
+  const inWatchlist = has(contentId);
   const [movie, setMovie] = useState<any>(null);
   const [reviews, setReviews] = useState<any[]>([]);
-  const [inWatchlist, setInWatchlist] = useState(false);
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [playNonce, setPlayNonce] = useState(0);
 
   useEffect(() => {
@@ -105,12 +109,25 @@ export default function MovieDetailScreen({ route }: any) {
       .finally(() => setLoading(false));
   }, [contentId]);
 
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+    }, [refresh])
+  );
+
   const toggleWatchlist = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
-      if (inWatchlist) { await removeFromWatchlist(contentId); setInWatchlist(false); }
-      else { await addToWatchlist(contentId); setInWatchlist(true); }
+      const nowIn = await toggle(contentId);
+      // optional soft feedback — button label already updates
+      if (!nowIn) {
+        /* removed */
+      }
     } catch {
       Alert.alert('Please sign in', 'You need an account to manage your watchlist.');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -177,8 +194,14 @@ export default function MovieDetailScreen({ route }: any) {
           <Text style={styles.playBtnText}>▶ Play Trailer in Streamix</Text>
         </Pressable>
 
-        <Pressable style={styles.watchlistBtn} onPress={toggleWatchlist}>
-          <Text style={styles.watchlistText}>{inWatchlist ? '✓ In Watchlist' : '+ Add to Watchlist'}</Text>
+        <Pressable
+          style={[styles.watchlistBtn, inWatchlist && styles.watchlistBtnActive]}
+          onPress={toggleWatchlist}
+          disabled={busy}
+        >
+          <Text style={[styles.watchlistText, inWatchlist && styles.watchlistTextActive]}>
+            {busy ? '…' : inWatchlist ? '✓ In Watchlist  ·  Tap to remove' : '+ Add to Watchlist'}
+          </Text>
         </Pressable>
 
         <Text style={styles.overview}>{movie.overview}</Text>
@@ -260,7 +283,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: spacing.sm,
   },
+  watchlistBtnActive: {
+    backgroundColor: colors.surface,
+    borderColor: colors.primary,
+  },
   watchlistText: { color: colors.text, fontWeight: '700' },
+  watchlistTextActive: { color: colors.primary },
   overview: { color: colors.text, marginTop: spacing.md, lineHeight: 20 },
   section: { color: colors.textMuted, marginTop: spacing.md },
   sectionValue: { color: colors.text },

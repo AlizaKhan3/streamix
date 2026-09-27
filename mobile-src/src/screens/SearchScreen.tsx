@@ -3,6 +3,7 @@ import {
   ActivityIndicator, FlatList, Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import MovieCard from '../components/MovieCard';
+import { useWatchlist } from '../context/WatchlistContext';
 import { searchCatalog } from '../services/api';
 import { colors, spacing } from '../theme/colors';
 
@@ -17,6 +18,7 @@ const GENRES: { label: string; value: string }[] = [
 ];
 
 export default function SearchScreen({ navigation }: any) {
+  const { has } = useWatchlist();
   const [query, setQuery] = useState('');
   const [genre, setGenre] = useState<string | null>(null);
   const [results, setResults] = useState<any[]>([]);
@@ -133,6 +135,7 @@ export default function SearchScreen({ navigation }: any) {
                 posterUrl={item.poster_path}
                 rating={item.rating_avg}
                 width={100}
+                inWatchlist={has(item.content_id)}
                 onPress={() => navigation.navigate('MovieDetail', { contentId: item.content_id })}
               />
             </View>

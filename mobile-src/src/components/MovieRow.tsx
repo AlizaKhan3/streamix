@@ -1,6 +1,7 @@
 import React from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import MovieCard from './MovieCard';
+import { useWatchlist } from '../context/WatchlistContext';
 import { colors, spacing } from '../theme/colors';
 
 type Movie = { content_id: number; title: string; poster_path?: string; rating_avg?: number };
@@ -8,6 +9,7 @@ type Movie = { content_id: number; title: string; poster_path?: string; rating_a
 export default function MovieRow({
   title, data, onSelect,
 }: { title: string; data: Movie[]; onSelect: (m: Movie) => void }) {
+  const { has } = useWatchlist();
   if (!data?.length) return null;
   return (
     <View style={styles.section}>
@@ -23,6 +25,7 @@ export default function MovieRow({
             title={item.title}
             posterUrl={item.poster_path}
             rating={item.rating_avg}
+            inWatchlist={has(item.content_id)}
             onPress={() => onSelect(item)}
           />
         )}
