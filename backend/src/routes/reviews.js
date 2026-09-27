@@ -1,48 +1,60 @@
+// ============================================================
+// REVIEWS — a movie's reviews live in its ORIGIN region (next to the movie
+// row whose aggregate they update), so this gateway forwards the request
+// there. Submitting runs a distributed transaction: 2PC (default) or Saga.
+// ============================================================
 const router = require('express').Router();
 const { requireAuth } = require('../middleware/auth');
-const { reviewShardFor } = require('../db/shardRouter');
-const { movieWriteConn } = require('../db/shardRouter');
+const { LOCAL_REGION, REGION_CODES } = require('../config/topology');
+const { callRegion } = require('../services/rpc');
+const movies = require('../services/movies');
+const directory = require('../services/directory');
+const { localMovieOrFail } = require('./watchlist');
+const { httpError } = require('../utils/httpError');
 
-/** GET /reviews/movie/:movieId — single-shard read (movieId is the shard key). */
+async function originOf(movieId) {
+  const movie = await movies.getMovie(LOCAL_REGION, movieId);
+  if (movie) return movie.origin_region;
+  const entry = await directory.catalogEntry(movieId).catch(() => null);
+  if (entry) return entry.origin_region;
+  throw httpError(404, 'Title not found');
+}
+
 router.get('/movie/:movieId', async (req, res) => {
-  const { conn } = reviewShardFor(req.params.movieId);
-  const { rows } = await conn.query(
-    `SELECT * FROM reviews WHERE movie_id = $1 AND moderation_status = 'approved' ORDER BY created_at DESC`,
-    [req.params.movieId]
-  );
-  res.json(rows);
+  const movieId = Number(req.params.movieId);
+  const origin = await originOf(movieId);
+  const reviews = await callRegion(origin, 'reviews.listForMovie', { region: origin, movieId });
+  res.json({ reviews, storedIn: origin, servedBy: LOCAL_REGION });
 });
 
-/** POST /reviews — writes the review shard, then asynchronously updates the movie's aggregate. */
 router.post('/', requireAuth, async (req, res) => {
-  const { movieId, rating, comment } = req.body;
-  if (!movieId || !rating) return res.status(400).json({ error: 'movieId and rating are required' });
+  const { movieId, rating, comment, protocol, failAt } = req.body || {};
+  if (!movieId) throw httpError(400, 'movieId is required');
+  const movie = await localMovieOrFail(movieId); // must be licensed where the user is
+  const origin = movie.origin_region;
 
-  const { conn } = reviewShardFor(movieId);
-  try {
-    const { rows } = await conn.query(
-      `INSERT INTO reviews (user_id, movie_id, rating, comment) VALUES ($1,$2,$3,$4) RETURNING *`,
-      [req.user.sub, movieId, rating, comment || null]
-    );
+  const result = await callRegion(origin, 'reviews.submit', {
+    region: origin,
+    user: req.user,
+    movieId: movie.content_id,
+    rating,
+    comment,
+    protocol: protocol === 'saga' ? 'saga' : '2pc',
+    failAt: failAt === 'movie' ? 'movie' : undefined,
+  });
+  res.status(201).json({ ...result, storedIn: origin, servedBy: LOCAL_REGION });
+});
 
-    // Update the movie's rating_avg/rating_count on its own shard — "async" here just
-    // means it does not block the response; in the full system this would be an
-    // event on a message queue (Kafka/RabbitMQ) as noted in the architecture doc.
-    reviewShardFor(movieId).conn.query(
-      `SELECT AVG(rating)::numeric(3,2) AS avg, COUNT(*) AS count FROM reviews WHERE movie_id = $1 AND moderation_status = 'approved'`,
-      [movieId]
-    ).then(({ rows: agg }) => {
-      return movieWriteConn(movieId).query(
-        `UPDATE movies SET rating_avg = $1, rating_count = $2 WHERE content_id = $3`,
-        [agg[0].avg, agg[0].count, movieId]
-      );
-    }).catch((e) => console.error('Aggregate update failed', e));
-
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Could not submit review' });
-  }
+/** The signed-in user's reviews from every region — scatter-gather across review nodes. */
+router.get('/mine', requireAuth, async (req, res) => {
+  const settled = await Promise.allSettled(
+    REGION_CODES.map((r) => callRegion(r, 'reviews.byUser', { region: r, userId: req.user.sub }))
+  );
+  res.json({
+    reviews: settled.filter((s) => s.status === 'fulfilled').flatMap((s) => s.value)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
+    regionsFailed: REGION_CODES.filter((_, i) => settled[i].status === 'rejected'),
+  });
 });
 
 module.exports = router;

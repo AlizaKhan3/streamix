@@ -1,186 +1,295 @@
-version: "3.8"
-
 # =====================================================================================
-# DISTRIBUTED MOVIE STREAMING DATABASE — Postgres cluster
+# STREAMIX — DISTRIBUTED MOVIE STREAMING DATABASE (two-region deployment)
 # =====================================================================================
-# Maps directly to course concepts:
-#   - user-db-master/replica        -> PRIMARY-REPLICA REPLICATION (identity DB)
-#   - movie-shard-us-*, movie-shard-eu-*  -> HORIZONTAL SHARDING + REGION DISTRIBUTION
-#                                            each shard also has its own replica -> REPLICATION per shard
-#   - watchlist-shard-1/2           -> HORIZONTAL SHARDING (hash by userId)
-#   - review-shard-1/2              -> HORIZONTAL SHARDING (hash by movieId)
-#   - users_auth vs users_profile tables (see schema.sql) -> VERTICAL FRAGMENTATION
 #
-# All nodes use the bitnami/postgresql image because it supports real streaming
-# replication configured purely through environment variables (no manual pg_basebackup).
+#   REGION PK (South Asia)                     REGION US (North America)
+#   api-pk            :4001                    api-us            :4002
+#   pk-user-primary   :5501 ─► replica :5502   us-user-primary   :5601 ─► replica :5602
+#   pk-movie-f0-primary :5511 ─► replica :5512 us-movie-f0-primary :5611 ─► replica :5612
+#   pk-movie-f1-primary :5521 ─► replica :5522 us-movie-f1-primary :5621 ─► replica :5622
+#   pk-review         :5531                    us-review         :5631
+#   pk-watchlist      :5541                    us-watchlist      :5641
+#
+#                     global-directory :5700  (Global Catalog Directory)
+#
+# Concept map:
+#   *-primary ─► *-replica   real async streaming replication (pg_basebackup + WAL)
+#   movie-f0 / movie-f1      horizontal fragmentation by content_id range
+#   pk-* vs us-*             geo-partitioning: each region owns its own full stack
+#   global-directory         cross-region discovery + roaming-user lookup
+#
+# Reset everything (wipes data):  docker compose down -v
 # =====================================================================================
+
+x-pg-command: &pg-command
+  - postgres
+  - -c
+  - wal_level=replica
+  - -c
+  - max_wal_senders=10
+  - -c
+  - hot_standby=on
+  - -c
+  - max_prepared_transactions=20   # needed for Two-Phase Commit
+  - -c
+  - max_connections=60
+  - -c
+  - shared_buffers=32MB
+
+x-pg-env: &pg-env
+  POSTGRES_USER: app
+  POSTGRES_PASSWORD: app_pass
+  REPLICATION_USER: repl_user
+  REPLICATION_PASSWORD: repl_pass
+
+x-pg-base: &pg-base
+  image: postgres:16
+  command: *pg-command
+  restart: unless-stopped
+  mem_limit: 256m
+  networks: [ddbnet]
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U app -h localhost"]
+    interval: 5s
+    timeout: 3s
+    retries: 30
+
+x-replica: &replica
+  <<: *pg-base
+  entrypoint: ["bash", "/scripts/replica-entrypoint.sh"]
+
+x-api: &api
+  build: .
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  networks: [ddbnet]
+  depends_on:
+    global-directory: { condition: service_healthy }
+    pk-user-primary: { condition: service_healthy }
+    pk-movie-f0-primary: { condition: service_healthy }
+    pk-movie-f1-primary: { condition: service_healthy }
+    pk-review: { condition: service_healthy }
+    pk-watchlist: { condition: service_healthy }
+    us-user-primary: { condition: service_healthy }
+    us-movie-f0-primary: { condition: service_healthy }
+    us-movie-f1-primary: { condition: service_healthy }
+    us-review: { condition: service_healthy }
+    us-watchlist: { condition: service_healthy }
 
 services:
 
-  # ---------------- USER DATABASE (identity) — Primary/Replica replication ----------------
-  user-db-master:
-    image: bitnami/postgresql:16
-    container_name: user-db-master
-    environment:
-      POSTGRESQL_REPLICATION_MODE: master
-      POSTGRESQL_REPLICATION_USER: repl_user
-      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: user_db
-    ports: ["5401:5432"]
+  # ------------------------------ GLOBAL ------------------------------
+  global-directory:
+    <<: *pg-base
+    container_name: global-directory
+    environment: { <<: *pg-env, POSTGRES_DB: directory_db }
+    ports: ["5700:5432"]
     volumes:
-      - user_master_data:/bitnami/postgresql
-      - ./sql/user_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [ddbnet]
+      - directory_data:/var/lib/postgresql/data
+      - ./sql/directory_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
 
-  user-db-replica:
-    image: bitnami/postgresql:16
-    container_name: user-db-replica
-    environment:
-      POSTGRESQL_REPLICATION_MODE: slave
-      POSTGRESQL_REPLICATION_USER: repl_user
-      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
-      POSTGRESQL_MASTER_HOST: user-db-master
-      POSTGRESQL_MASTER_PORT_NUMBER: 5432
-      POSTGRESQL_PASSWORD: app_pass
-    ports: ["5402:5432"]
-    depends_on: [user-db-master]
-    networks: [ddbnet]
-
-  # ---------------- MOVIE CLUSTER — Shard 1 == "US region" ----------------
-  movie-shard-us-master:
-    image: bitnami/postgresql:16
-    container_name: movie-shard-us-master
-    environment:
-      POSTGRESQL_REPLICATION_MODE: master
-      POSTGRESQL_REPLICATION_USER: repl_user
-      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: movie_db
-    ports: ["5411:5432"]
+  # ------------------------------ REGION PK ------------------------------
+  pk-user-primary:
+    <<: *pg-base
+    container_name: pk-user-primary
+    environment: { <<: *pg-env, POSTGRES_DB: user_db }
+    ports: ["5501:5432"]
     volumes:
-      - movie_us_master_data:/bitnami/postgresql
-      - ./sql/movie_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [ddbnet]
+      - pk_user_primary:/var/lib/postgresql/data
+      - ./docker/primary-init.sh:/docker-entrypoint-initdb.d/00-replication.sh:ro
+      - ./sql/user_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
 
-  movie-shard-us-replica:
-    image: bitnami/postgresql:16
-    container_name: movie-shard-us-replica
-    environment:
-      POSTGRESQL_REPLICATION_MODE: slave
-      POSTGRESQL_REPLICATION_USER: repl_user
-      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
-      POSTGRESQL_MASTER_HOST: movie-shard-us-master
-      POSTGRESQL_MASTER_PORT_NUMBER: 5432
-      POSTGRESQL_PASSWORD: app_pass
-    ports: ["5412:5432"]
-    depends_on: [movie-shard-us-master]
-    networks: [ddbnet]
-
-  # ---------------- MOVIE CLUSTER — Shard 2 == "EU region" ----------------
-  movie-shard-eu-master:
-    image: bitnami/postgresql:16
-    container_name: movie-shard-eu-master
-    environment:
-      POSTGRESQL_REPLICATION_MODE: master
-      POSTGRESQL_REPLICATION_USER: repl_user
-      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: movie_db
-    ports: ["5421:5432"]
+  pk-user-replica:
+    <<: *replica
+    container_name: pk-user-replica
+    environment: { <<: *pg-env, PRIMARY_HOST: pk-user-primary }
+    ports: ["5502:5432"]
+    depends_on: [pk-user-primary]
     volumes:
-      - movie_eu_master_data:/bitnami/postgresql
-      - ./sql/movie_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [ddbnet]
+      - pk_user_replica:/var/lib/postgresql/data
+      - ./docker/replica-entrypoint.sh:/scripts/replica-entrypoint.sh:ro
 
-  movie-shard-eu-replica:
-    image: bitnami/postgresql:16
-    container_name: movie-shard-eu-replica
-    environment:
-      POSTGRESQL_REPLICATION_MODE: slave
-      POSTGRESQL_REPLICATION_USER: repl_user
-      POSTGRESQL_REPLICATION_PASSWORD: repl_pass
-      POSTGRESQL_MASTER_HOST: movie-shard-eu-master
-      POSTGRESQL_MASTER_PORT_NUMBER: 5432
-      POSTGRESQL_PASSWORD: app_pass
-    ports: ["5422:5432"]
-    depends_on: [movie-shard-eu-master]
-    networks: [ddbnet]
-
-  # ---------------- WATCHLIST — sharded by userId (no replicas, kept lean) ----------------
-  watchlist-shard-1:
-    image: bitnami/postgresql:16
-    container_name: watchlist-shard-1
-    environment:
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: watchlist_db
-    ports: ["5431:5432"]
+  pk-movie-f0-primary:
+    <<: *pg-base
+    container_name: pk-movie-f0-primary
+    environment: { <<: *pg-env, POSTGRES_DB: movie_db }
+    ports: ["5511:5432"]
     volumes:
-      - ./sql/watchlist_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [ddbnet]
+      - pk_movie_f0_primary:/var/lib/postgresql/data
+      - ./docker/primary-init.sh:/docker-entrypoint-initdb.d/00-replication.sh:ro
+      - ./sql/movie_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./sql/movie_fragment0.sql:/docker-entrypoint-initdb.d/20-fragment.sql:ro
 
-  watchlist-shard-2:
-    image: bitnami/postgresql:16
-    container_name: watchlist-shard-2
-    environment:
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: watchlist_db
-    ports: ["5432:5432"]
+  pk-movie-f0-replica:
+    <<: *replica
+    container_name: pk-movie-f0-replica
+    environment: { <<: *pg-env, PRIMARY_HOST: pk-movie-f0-primary }
+    ports: ["5512:5432"]
+    depends_on: [pk-movie-f0-primary]
     volumes:
-      - ./sql/watchlist_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [ddbnet]
+      - pk_movie_f0_replica:/var/lib/postgresql/data
+      - ./docker/replica-entrypoint.sh:/scripts/replica-entrypoint.sh:ro
 
-  # ---------------- REVIEWS — sharded by movieId ----------------
-  review-shard-1:
-    image: bitnami/postgresql:16
-    container_name: review-shard-1
-    environment:
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: review_db
-    ports: ["5441:5432"]
+  pk-movie-f1-primary:
+    <<: *pg-base
+    container_name: pk-movie-f1-primary
+    environment: { <<: *pg-env, POSTGRES_DB: movie_db }
+    ports: ["5521:5432"]
     volumes:
-      - ./sql/review_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [ddbnet]
+      - pk_movie_f1_primary:/var/lib/postgresql/data
+      - ./docker/primary-init.sh:/docker-entrypoint-initdb.d/00-replication.sh:ro
+      - ./sql/movie_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./sql/movie_fragment1.sql:/docker-entrypoint-initdb.d/20-fragment.sql:ro
 
-  review-shard-2:
-    image: bitnami/postgresql:16
-    container_name: review-shard-2
-    environment:
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: review_db
-    ports: ["5442:5432"]
+  pk-movie-f1-replica:
+    <<: *replica
+    container_name: pk-movie-f1-replica
+    environment: { <<: *pg-env, PRIMARY_HOST: pk-movie-f1-primary }
+    ports: ["5522:5432"]
+    depends_on: [pk-movie-f1-primary]
     volumes:
-      - ./sql/review_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [ddbnet]
+      - pk_movie_f1_replica:/var/lib/postgresql/data
+      - ./docker/replica-entrypoint.sh:/scripts/replica-entrypoint.sh:ro
 
-  # ---------------- API Gateway / Backend ----------------
-  api:
-    build: .
-    container_name: ddb-api
-    env_file: .env
-    ports: ["4000:4000"]
-    depends_on:
-      - user-db-master
-      - movie-shard-us-master
-      - movie-shard-eu-master
-      - watchlist-shard-1
-      - watchlist-shard-2
-      - review-shard-1
-      - review-shard-2
-    networks: [ddbnet]
+  pk-review:
+    <<: *pg-base
+    container_name: pk-review
+    environment: { <<: *pg-env, POSTGRES_DB: review_db }
+    ports: ["5531:5432"]
+    volumes:
+      - pk_review:/var/lib/postgresql/data
+      - ./sql/review_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+
+  pk-watchlist:
+    <<: *pg-base
+    container_name: pk-watchlist
+    environment: { <<: *pg-env, POSTGRES_DB: watchlist_db }
+    ports: ["5541:5432"]
+    volumes:
+      - pk_watchlist:/var/lib/postgresql/data
+      - ./sql/watchlist_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+
+  # ------------------------------ REGION US ------------------------------
+  us-user-primary:
+    <<: *pg-base
+    container_name: us-user-primary
+    environment: { <<: *pg-env, POSTGRES_DB: user_db }
+    ports: ["5601:5432"]
+    volumes:
+      - us_user_primary:/var/lib/postgresql/data
+      - ./docker/primary-init.sh:/docker-entrypoint-initdb.d/00-replication.sh:ro
+      - ./sql/user_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+
+  us-user-replica:
+    <<: *replica
+    container_name: us-user-replica
+    environment: { <<: *pg-env, PRIMARY_HOST: us-user-primary }
+    ports: ["5602:5432"]
+    depends_on: [us-user-primary]
+    volumes:
+      - us_user_replica:/var/lib/postgresql/data
+      - ./docker/replica-entrypoint.sh:/scripts/replica-entrypoint.sh:ro
+
+  us-movie-f0-primary:
+    <<: *pg-base
+    container_name: us-movie-f0-primary
+    environment: { <<: *pg-env, POSTGRES_DB: movie_db }
+    ports: ["5611:5432"]
+    volumes:
+      - us_movie_f0_primary:/var/lib/postgresql/data
+      - ./docker/primary-init.sh:/docker-entrypoint-initdb.d/00-replication.sh:ro
+      - ./sql/movie_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./sql/movie_fragment0.sql:/docker-entrypoint-initdb.d/20-fragment.sql:ro
+
+  us-movie-f0-replica:
+    <<: *replica
+    container_name: us-movie-f0-replica
+    environment: { <<: *pg-env, PRIMARY_HOST: us-movie-f0-primary }
+    ports: ["5612:5432"]
+    depends_on: [us-movie-f0-primary]
+    volumes:
+      - us_movie_f0_replica:/var/lib/postgresql/data
+      - ./docker/replica-entrypoint.sh:/scripts/replica-entrypoint.sh:ro
+
+  us-movie-f1-primary:
+    <<: *pg-base
+    container_name: us-movie-f1-primary
+    environment: { <<: *pg-env, POSTGRES_DB: movie_db }
+    ports: ["5621:5432"]
+    volumes:
+      - us_movie_f1_primary:/var/lib/postgresql/data
+      - ./docker/primary-init.sh:/docker-entrypoint-initdb.d/00-replication.sh:ro
+      - ./sql/movie_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./sql/movie_fragment1.sql:/docker-entrypoint-initdb.d/20-fragment.sql:ro
+
+  us-movie-f1-replica:
+    <<: *replica
+    container_name: us-movie-f1-replica
+    environment: { <<: *pg-env, PRIMARY_HOST: us-movie-f1-primary }
+    ports: ["5622:5432"]
+    depends_on: [us-movie-f1-primary]
+    volumes:
+      - us_movie_f1_replica:/var/lib/postgresql/data
+      - ./docker/replica-entrypoint.sh:/scripts/replica-entrypoint.sh:ro
+
+  us-review:
+    <<: *pg-base
+    container_name: us-review
+    environment: { <<: *pg-env, POSTGRES_DB: review_db }
+    ports: ["5631:5432"]
+    volumes:
+      - us_review:/var/lib/postgresql/data
+      - ./sql/review_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+
+  us-watchlist:
+    <<: *pg-base
+    container_name: us-watchlist
+    environment: { <<: *pg-env, POSTGRES_DB: watchlist_db }
+    ports: ["5641:5432"]
+    volumes:
+      - us_watchlist:/var/lib/postgresql/data
+      - ./sql/watchlist_db.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+
+  # ------------------------------ REGIONAL API GATEWAYS ------------------------------
+  api-pk:
+    <<: *api
+    container_name: api-pk
+    environment:
+      REGION: PK
+      DB_MODE: docker
+      PORT: 4000
+    ports: ["4001:4000"]
+
+  api-us:
+    <<: *api
+    container_name: api-us
+    environment:
+      REGION: US
+      DB_MODE: docker
+      PORT: 4000
+    ports: ["4002:4000"]
 
 networks:
   ddbnet:
     driver: bridge
 
 volumes:
-  user_master_data:
-  movie_us_master_data:
-  movie_eu_master_data:
+  directory_data:
+  pk_user_primary:
+  pk_user_replica:
+  pk_movie_f0_primary:
+  pk_movie_f0_replica:
+  pk_movie_f1_primary:
+  pk_movie_f1_replica:
+  pk_review:
+  pk_watchlist:
+  us_user_primary:
+  us_user_replica:
+  us_movie_f0_primary:
+  us_movie_f0_replica:
+  us_movie_f1_primary:
+  us_movie_f1_replica:
+  us_review:
+  us_watchlist:

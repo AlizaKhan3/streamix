@@ -1,0 +1,9 @@
+/** An Error that the gateway's error handler turns into an HTTP response. */
+function httpError(status, message, details) {
+  const err = new Error(message);
+  err.status = status;
+  if (details) err.details = details;
+  return err;
+}
+
+module.exports = { httpError };
