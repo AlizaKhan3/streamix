@@ -1,21 +1,14 @@
 # =====================================================================================
-# DISTRIBUTED MOVIE STREAMING DATABASE — Postgres cluster
+# POLYGLOT DISTRIBUTED MOVIE STREAMING — local free stack
 # =====================================================================================
-# Maps directly to course concepts:
-#   - user-db-master/replica        -> PRIMARY-REPLICA REPLICATION (identity DB)
-#   - movie-shard-us-*, movie-shard-eu-*  -> HORIZONTAL SHARDING + REGION DISTRIBUTION
-#                                            each shard also has its own replica -> REPLICATION per shard
-#   - watchlist-shard-1/2           -> HORIZONTAL SHARDING (hash by userId)
-#   - review-shard-1/2              -> HORIZONTAL SHARDING (hash by movieId)
-#   - users_auth vs users_profile tables (see schema.sql) -> VERTICAL FRAGMENTATION
-#
-# Uses bitnamilegacy/postgresql (Bitnami moved free PG 16 tags off bitnami/postgresql).
-# Replication is configured via environment variables (no manual pg_basebackup).
+# Postgres  : users (P/R) + movie shards US/EU (P/R each)     — relational
+# MongoDB   : watchlist (2 app-shards) + reviews (2 app-shards) — document
+# Redis     : catalog cache + Streams event bus (Kafka stand-in)
+# Services  : gateway :4000 + user/catalog/watchlist/review/recommendation/analytics
 # =====================================================================================
 
 services:
 
-  # ---------------- USER DATABASE (identity) — Primary/Replica replication ----------------
   user-db-master:
     image: bitnamilegacy/postgresql:16
     container_name: user-db-master
@@ -46,7 +39,6 @@ services:
     depends_on: [user-db-master]
     networks: [ddbnet]
 
-  # ---------------- MOVIE CLUSTER — Shard 1 == "US region" ----------------
   movie-shard-us-master:
     image: bitnamilegacy/postgresql:16
     container_name: movie-shard-us-master
@@ -77,7 +69,6 @@ services:
     depends_on: [movie-shard-us-master]
     networks: [ddbnet]
 
-  # ---------------- MOVIE CLUSTER — Shard 2 == "EU region" ----------------
   movie-shard-eu-master:
     image: bitnamilegacy/postgresql:16
     container_name: movie-shard-eu-master
@@ -108,63 +99,46 @@ services:
     depends_on: [movie-shard-eu-master]
     networks: [ddbnet]
 
-  # ---------------- WATCHLIST — sharded by userId (no replicas, kept lean) ----------------
-  watchlist-shard-1:
-    image: bitnamilegacy/postgresql:16
-    container_name: watchlist-shard-1
-    environment:
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: watchlist_db
-    ports: ["5431:5432"]
-    volumes:
-      - ./sql/watchlist_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  watchlist-mongo-1:
+    image: mongo:7
+    container_name: watchlist-mongo-1
+    ports: ["27017:27017"]
+    volumes: [watchlist_mongo1_data:/data/db]
     networks: [ddbnet]
 
-  watchlist-shard-2:
-    image: bitnamilegacy/postgresql:16
-    container_name: watchlist-shard-2
-    environment:
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: watchlist_db
-    ports: ["5432:5432"]
-    volumes:
-      - ./sql/watchlist_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  watchlist-mongo-2:
+    image: mongo:7
+    container_name: watchlist-mongo-2
+    ports: ["27018:27017"]
+    volumes: [watchlist_mongo2_data:/data/db]
     networks: [ddbnet]
 
-  # ---------------- REVIEWS — sharded by movieId ----------------
-  review-shard-1:
-    image: bitnamilegacy/postgresql:16
-    container_name: review-shard-1
-    environment:
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: review_db
-    ports: ["5441:5432"]
-    volumes:
-      - ./sql/review_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  review-mongo-1:
+    image: mongo:7
+    container_name: review-mongo-1
+    ports: ["27019:27017"]
+    volumes: [review_mongo1_data:/data/db]
     networks: [ddbnet]
 
-  review-shard-2:
-    image: bitnamilegacy/postgresql:16
-    container_name: review-shard-2
-    environment:
-      POSTGRESQL_USERNAME: app
-      POSTGRESQL_PASSWORD: app_pass
-      POSTGRESQL_DATABASE: review_db
-    ports: ["5442:5432"]
-    volumes:
-      - ./sql/review_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  review-mongo-2:
+    image: mongo:7
+    container_name: review-mongo-2
+    ports: ["27020:27017"]
+    volumes: [review_mongo2_data:/data/db]
     networks: [ddbnet]
 
-  # ---------------- API Gateway / Backend ----------------
-  api:
+  redis:
+    image: redis:7-alpine
+    container_name: ddb-redis
+    ports: ["6379:6379"]
+    networks: [ddbnet]
+
+  user-service:
     build: .
-    container_name: ddb-api
+    container_name: ddb-user-service
+    command: ["node", "services/user-service/index.js"]
     env_file: .env
-    # Override .env localhost hosts — inside Docker, use service names + internal 5432
-    environment:
+    environment: &svc-env
       USER_DB_MASTER_HOST: user-db-master
       USER_DB_MASTER_PORT: "5432"
       USER_DB_REPLICA_HOST: user-db-replica
@@ -177,24 +151,86 @@ services:
       MOVIE_SHARD1_MASTER_PORT: "5432"
       MOVIE_SHARD1_REPLICA_HOST: movie-shard-eu-replica
       MOVIE_SHARD1_REPLICA_PORT: "5432"
-      WATCHLIST_SHARD0_HOST: watchlist-shard-1
-      WATCHLIST_SHARD0_PORT: "5432"
-      WATCHLIST_SHARD1_HOST: watchlist-shard-2
-      WATCHLIST_SHARD1_PORT: "5432"
-      REVIEW_SHARD0_HOST: review-shard-1
-      REVIEW_SHARD0_PORT: "5432"
-      REVIEW_SHARD1_HOST: review-shard-2
-      REVIEW_SHARD1_PORT: "5432"
+      WATCHLIST_MONGO0_URI: mongodb://watchlist-mongo-1:27017/watchlist
+      WATCHLIST_MONGO1_URI: mongodb://watchlist-mongo-2:27017/watchlist
+      REVIEW_MONGO0_URI: mongodb://review-mongo-1:27017/reviews
+      REVIEW_MONGO1_URI: mongodb://review-mongo-2:27017/reviews
+      REDIS_URL: redis://redis:6379
+      USER_SERVICE_URL: http://user-service:4001
+      CATALOG_SERVICE_URL: http://catalog-service:4002
+      WATCHLIST_SERVICE_URL: http://watchlist-service:4003
+      REVIEW_SERVICE_URL: http://review-service:4004
+      RECOMMENDATION_SERVICE_URL: http://recommendation-service:4005
+      ANALYTICS_SERVICE_URL: http://analytics-service:4006
+    depends_on: [user-db-master, user-db-replica]
+    networks: [ddbnet]
+
+  catalog-service:
+    build: .
+    container_name: ddb-catalog-service
+    command: ["node", "services/catalog-service/index.js"]
+    env_file: .env
+    environment:
+      <<: *svc-env
+    depends_on: [movie-shard-us-master, movie-shard-eu-master, redis]
+    networks: [ddbnet]
+
+  watchlist-service:
+    build: .
+    container_name: ddb-watchlist-service
+    command: ["node", "services/watchlist-service/index.js"]
+    env_file: .env
+    environment:
+      <<: *svc-env
+    depends_on: [watchlist-mongo-1, watchlist-mongo-2]
+    networks: [ddbnet]
+
+  review-service:
+    build: .
+    container_name: ddb-review-service
+    command: ["node", "services/review-service/index.js"]
+    env_file: .env
+    environment:
+      <<: *svc-env
+    depends_on: [review-mongo-1, review-mongo-2, redis, movie-shard-us-master, movie-shard-eu-master]
+    networks: [ddbnet]
+
+  recommendation-service:
+    build: .
+    container_name: ddb-recommendation-service
+    command: ["node", "services/recommendation-service/index.js"]
+    env_file: .env
+    environment:
+      <<: *svc-env
+    depends_on: [watchlist-mongo-1, review-mongo-1, movie-shard-us-master]
+    networks: [ddbnet]
+
+  analytics-service:
+    build: .
+    container_name: ddb-analytics-service
+    command: ["node", "services/analytics-service/index.js"]
+    env_file: .env
+    environment:
+      <<: *svc-env
+    depends_on: [redis, review-mongo-1, review-mongo-2]
+    networks: [ddbnet]
+
+  gateway:
+    build: .
+    container_name: ddb-api
+    command: ["node", "services/gateway/index.js"]
+    env_file: .env
+    environment:
+      <<: *svc-env
+      PORT: "4000"
     ports: ["4000:4000"]
     depends_on:
-      - user-db-master
-      - user-db-replica
-      - movie-shard-us-master
-      - movie-shard-eu-master
-      - watchlist-shard-1
-      - watchlist-shard-2
-      - review-shard-1
-      - review-shard-2
+      - user-service
+      - catalog-service
+      - watchlist-service
+      - review-service
+      - recommendation-service
+      - analytics-service
     networks: [ddbnet]
 
 networks:
@@ -205,3 +241,7 @@ volumes:
   user_master_data:
   movie_us_master_data:
   movie_eu_master_data:
+  watchlist_mongo1_data:
+  watchlist_mongo2_data:
+  review_mongo1_data:
+  review_mongo2_data:
