@@ -3,10 +3,10 @@ import { ActivityIndicator, View } from 'react-native';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import Icon from 'react-native-vector-icons/Ionicons';
 
 import { useAuth } from '../context/AuthContext';
 import { colors } from '../theme/colors';
+import TabBarIcon from '../components/TabBarIcon';
 
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
@@ -35,13 +35,6 @@ function AuthNavigator() {
   );
 }
 
-const TAB_ICONS: Record<string, { focused: string; unfocused: string }> = {
-  Home: { focused: 'home', unfocused: 'home-outline' },
-  Search: { focused: 'search', unfocused: 'search-outline' },
-  Watchlist: { focused: 'bookmark', unfocused: 'bookmark-outline' },
-  Profile: { focused: 'person', unfocused: 'person-outline' },
-};
-
 function MainTabs() {
   return (
     <Tab.Navigator
@@ -51,10 +44,9 @@ function MainTabs() {
         tabBarStyle: { backgroundColor: colors.surface, borderTopColor: colors.border },
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textMuted,
-        tabBarIcon: ({ focused, color, size }) => {
-          const icons = TAB_ICONS[route.name] || TAB_ICONS.Home;
-          return <Icon name={focused ? icons.focused : icons.unfocused} size={size} color={color} />;
-        },
+        tabBarIcon: ({ focused, color, size }) => (
+          <TabBarIcon name={route.name} color={color} size={size} focused={focused} />
+        ),
       })}
     >
       <Tab.Screen name="Home" component={HomeScreen} options={{ title: 'STREAMIX', tabBarLabel: 'Home' }} />
