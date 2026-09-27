@@ -1,55 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, Alert, Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
+import YoutubePlayer, { YoutubeIframeRef } from 'react-native-youtube-iframe';
 import StarRating from '../components/StarRating';
 import {
   addToWatchlist, fetchMovie, fetchReviews, removeFromWatchlist, submitReview,
 } from '../services/api';
 import { colors, spacing } from '../theme/colors';
 
-function youtubeWatchUrl(key: string) {
-  return `https://www.youtube.com/watch?v=${key}`;
-}
-
-function youtubeEmbedHtml(key: string) {
-  // YouTube often serves a blank page if you load /embed directly in WKWebView.
-  // An iframe document + baseUrl is the reliable in-app pattern on iOS.
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
-    iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
-  </style>
-</head>
-<body>
-  <iframe
-    src="https://www.youtube.com/embed/${key}?playsinline=1&rel=0&modestbranding=1&controls=1"
-    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-    allowfullscreen
-    referrerpolicy="strict-origin-when-cross-origin"
-  ></iframe>
-</body>
-</html>`;
-}
-
-async function openTrailerExternally(trailerKey: string) {
-  const url = youtubeWatchUrl(trailerKey);
-  const can = await Linking.canOpenURL(url);
-  if (!can) {
-    Alert.alert('Cannot open YouTube', url);
-    return;
-  }
-  await Linking.openURL(url);
-}
+const PLAYER_HEIGHT = 220;
+const PLAYER_WIDTH = Dimensions.get('window').width;
 
 /**
- * In-app YouTube trailer. Falls back to Safari/YouTube if the embed fails
- * (common on iOS Simulator).
+ * In-app trailer player — stays inside Streamix with Play / Pause / Stop.
+ * Uses TMDb YouTube trailer_key (full studio features need a licensed CDN).
  */
 function TrailerPlayer({
   trailerKey,
@@ -60,36 +25,62 @@ function TrailerPlayer({
   posterUrl?: string;
   autoplay?: boolean;
 }) {
+  const playerRef = useRef<YoutubeIframeRef>(null);
+  const [active, setActive] = useState(!!autoplay && !!trailerKey);
   const [playing, setPlaying] = useState(!!autoplay && !!trailerKey);
 
-  if (playing && trailerKey) {
+  const onStateChange = useCallback((state: string) => {
+    if (state === 'ended') setPlaying(false);
+    if (state === 'playing') setPlaying(true);
+    if (state === 'paused') setPlaying(false);
+  }, []);
+
+  const start = () => {
+    if (!trailerKey) {
+      Alert.alert('No trailer', 'TMDb did not provide a trailer for this title.');
+      return;
+    }
+    setActive(true);
+    setPlaying(true);
+  };
+
+  const togglePlayPause = () => {
+    if (!active) {
+      start();
+      return;
+    }
+    setPlaying((p) => !p);
+  };
+
+  const stop = async () => {
+    setPlaying(false);
+    try {
+      await playerRef.current?.seekTo(0, true);
+    } catch {
+      // ignore
+    }
+    setActive(false);
+  };
+
+  if (!active || !trailerKey) {
     return (
-      <View style={styles.player}>
-        <WebView
-          source={{ html: youtubeEmbedHtml(trailerKey), baseUrl: 'https://www.youtube.com' }}
-          style={styles.webview}
-          allowsFullscreenVideo
-          allowsInlineMediaPlayback
-          mediaPlaybackRequiresUserAction={false}
-          javaScriptEnabled
-          domStorageEnabled
-          setSupportMultipleWindows={false}
-          userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-          onHttpError={() => {
-            setPlaying(false);
-            openTrailerExternally(trailerKey);
-          }}
-          onError={() => {
-            setPlaying(false);
-            openTrailerExternally(trailerKey);
-          }}
-        />
-        <View style={styles.playerActions}>
-          <Pressable style={styles.closePlayer} onPress={() => setPlaying(false)}>
-            <Text style={styles.closePlayerText}>Close</Text>
+      <View>
+        <Pressable style={styles.player} onPress={start}>
+          {posterUrl && <Image source={{ uri: posterUrl }} style={StyleSheet.absoluteFill} />}
+          <View style={styles.playerOverlay}>
+            <Text style={styles.playerIcon}>▶</Text>
+            <Text style={styles.playHint}>{trailerKey ? 'Tap to play trailer' : 'No trailer available'}</Text>
+          </View>
+        </Pressable>
+        <View style={styles.controls}>
+          <Pressable style={[styles.controlBtn, styles.controlPrimary]} onPress={start}>
+            <Text style={styles.controlText}>▶ Play</Text>
           </Pressable>
-          <Pressable style={styles.closePlayer} onPress={() => openTrailerExternally(trailerKey)}>
-            <Text style={styles.closePlayerText}>Open in YouTube</Text>
+          <Pressable style={styles.controlBtn} disabled>
+            <Text style={[styles.controlText, styles.controlDisabled]}>⏸ Pause</Text>
+          </Pressable>
+          <Pressable style={styles.controlBtn} disabled>
+            <Text style={[styles.controlText, styles.controlDisabled]}>⏹ Stop</Text>
           </Pressable>
         </View>
       </View>
@@ -97,22 +88,35 @@ function TrailerPlayer({
   }
 
   return (
-    <Pressable
-      style={styles.player}
-      onPress={() => {
-        if (!trailerKey) {
-          Alert.alert('No trailer', 'TMDb did not provide a trailer for this title.');
-          return;
-        }
-        setPlaying(true);
-      }}
-    >
-      {posterUrl && <Image source={{ uri: posterUrl }} style={StyleSheet.absoluteFill} />}
-      <View style={styles.playerOverlay}>
-        <Text style={styles.playerIcon}>▶</Text>
-        <Text style={styles.playHint}>{trailerKey ? 'Play trailer' : 'No trailer available'}</Text>
+    <View>
+      <View style={styles.player}>
+        <YoutubePlayer
+          ref={playerRef}
+          height={PLAYER_HEIGHT}
+          width={PLAYER_WIDTH}
+          play={playing}
+          videoId={trailerKey}
+          onChangeState={onStateChange}
+          webViewProps={{
+            allowsInlineMediaPlayback: true,
+            mediaPlaybackRequiresUserAction: false,
+          }}
+          initialPlayerParams={{
+            preventFullScreen: false,
+            modestbranding: true,
+            rel: false,
+          }}
+        />
       </View>
-    </Pressable>
+      <View style={styles.controls}>
+        <Pressable style={[styles.controlBtn, styles.controlPrimary]} onPress={togglePlayPause}>
+          <Text style={styles.controlText}>{playing ? '⏸ Pause' : '▶ Play'}</Text>
+        </Pressable>
+        <Pressable style={styles.controlBtn} onPress={stop}>
+          <Text style={styles.controlText}>⏹ Stop</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -124,7 +128,7 @@ export default function MovieDetailScreen({ route }: any) {
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
   const [loading, setLoading] = useState(true);
-  const [forcePlay, setForcePlay] = useState(false);
+  const [playNonce, setPlayNonce] = useState(0);
 
   useEffect(() => {
     Promise.all([fetchMovie(contentId), fetchReviews(contentId)])
@@ -136,7 +140,7 @@ export default function MovieDetailScreen({ route }: any) {
     try {
       if (inWatchlist) { await removeFromWatchlist(contentId); setInWatchlist(false); }
       else { await addToWatchlist(contentId); setInWatchlist(true); }
-    } catch (err: any) {
+    } catch {
       Alert.alert('Please sign in', 'You need an account to manage your watchlist.');
     }
   };
@@ -147,7 +151,7 @@ export default function MovieDetailScreen({ route }: any) {
       const created = await submitReview(contentId, rating, comment);
       setReviews((prev) => [created, ...prev]);
       setRating(0); setComment('');
-    } catch (err: any) {
+    } catch {
       Alert.alert('Please sign in', 'You need an account to leave a review.');
     }
   };
@@ -157,12 +161,12 @@ export default function MovieDetailScreen({ route }: any) {
   }
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={styles.container} nestedScrollEnabled>
       <TrailerPlayer
-        key={forcePlay ? 'playing' : 'idle'}
+        key={`${movie.trailer_key}-${playNonce}`}
         trailerKey={movie.trailer_key}
         posterUrl={movie.backdrop_path || movie.poster_path}
-        autoplay={!!autoplay || forcePlay}
+        autoplay={!!autoplay || playNonce > 0}
       />
 
       <View style={styles.body}>
@@ -180,33 +184,23 @@ export default function MovieDetailScreen({ route }: any) {
               Alert.alert('No trailer', 'TMDb did not provide a trailer for this title.');
               return;
             }
-            // Prefer external YouTube — most reliable on iOS Simulator
-            openTrailerExternally(movie.trailer_key);
+            setPlayNonce((n) => n + 1);
           }}
         >
-          <Text style={styles.playBtnText}>▶ Play Trailer</Text>
+          <Text style={styles.playBtnText}>▶ Play Trailer in Streamix</Text>
         </Pressable>
 
-        <Pressable
-          style={styles.watchlistBtn}
-          onPress={() => {
-            if (!movie.trailer_key) {
-              Alert.alert('No trailer', 'TMDb did not provide a trailer for this title.');
-              return;
-            }
-            setForcePlay(true);
-          }}
-        >
-          <Text style={styles.watchlistText}>▶ Play in app</Text>
-        </Pressable>
-
-        <Pressable style={[styles.watchlistBtn, { marginTop: spacing.sm }]} onPress={toggleWatchlist}>
+        <Pressable style={styles.watchlistBtn} onPress={toggleWatchlist}>
           <Text style={styles.watchlistText}>{inWatchlist ? '✓ In Watchlist' : '+ Add to Watchlist'}</Text>
         </Pressable>
 
         <Text style={styles.overview}>{movie.overview}</Text>
 
-        {movie.director && <Text style={styles.section}>Director: <Text style={styles.sectionValue}>{movie.director}</Text></Text>}
+        {movie.director && (
+          <Text style={styles.section}>
+            Director: <Text style={styles.sectionValue}>{movie.director}</Text>
+          </Text>
+        )}
 
         <Text style={styles.sectionHeading}>Ratings & Reviews</Text>
         <View style={styles.reviewForm}>
@@ -238,17 +232,40 @@ export default function MovieDetailScreen({ route }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   loading: { flex: 1, backgroundColor: colors.background, justifyContent: 'center', alignItems: 'center' },
-  player: { height: 240, width: '100%', backgroundColor: '#111', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
-  webview: { width: '100%', height: 240, backgroundColor: '#000' },
-  playerActions: { position: 'absolute', top: 8, right: 8, flexDirection: 'row', gap: 6 },
-  closePlayer: {
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 4,
+  player: {
+    height: PLAYER_HEIGHT,
+    width: '100%',
+    backgroundColor: '#000',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
   },
-  closePlayerText: { color: '#fff', fontWeight: '600', fontSize: 12 },
+  controls: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    gap: 8,
+  },
+  controlBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 6,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  controlPrimary: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  controlText: { color: colors.text, fontWeight: '700' },
+  controlDisabled: { color: colors.textMuted },
   playerOverlay: {
-    ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'center', alignItems: 'center',
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   playerIcon: { fontSize: 52, color: '#fff' },
   playHint: { color: '#fff', marginTop: 6, fontWeight: '600' },
@@ -257,26 +274,56 @@ const styles = StyleSheet.create({
   meta: { color: colors.textMuted, marginTop: spacing.xs },
   genres: { color: colors.textMuted, marginTop: 2, fontStyle: 'italic' },
   playBtn: {
-    backgroundColor: colors.primary, borderRadius: 6, paddingVertical: 12,
-    alignItems: 'center', marginTop: spacing.md,
+    backgroundColor: colors.primary,
+    borderRadius: 6,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: spacing.md,
   },
   playBtnText: { color: '#fff', fontWeight: '800', fontSize: 16 },
   watchlistBtn: {
-    borderWidth: 1, borderColor: colors.textMuted, borderRadius: 6, paddingVertical: 10,
-    alignItems: 'center', marginTop: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.textMuted,
+    borderRadius: 6,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginTop: spacing.sm,
   },
   watchlistText: { color: colors.text, fontWeight: '700' },
   overview: { color: colors.text, marginTop: spacing.md, lineHeight: 20 },
   section: { color: colors.textMuted, marginTop: spacing.md },
   sectionValue: { color: colors.text },
-  sectionHeading: { color: colors.text, fontSize: 18, fontWeight: '700', marginTop: spacing.xl, marginBottom: spacing.sm },
+  sectionHeading: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: spacing.xl,
+    marginBottom: spacing.sm,
+  },
   reviewForm: { backgroundColor: colors.surface, borderRadius: 8, padding: spacing.md },
   commentInput: {
-    color: colors.text, borderColor: colors.border, borderWidth: 1, borderRadius: 6,
-    padding: spacing.sm, marginTop: spacing.sm, minHeight: 60, textAlignVertical: 'top',
+    color: colors.text,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: 6,
+    padding: spacing.sm,
+    marginTop: spacing.sm,
+    minHeight: 60,
+    textAlignVertical: 'top',
   },
-  submitBtn: { backgroundColor: colors.primary, borderRadius: 6, padding: spacing.sm, alignItems: 'center', marginTop: spacing.sm },
+  submitBtn: {
+    backgroundColor: colors.primary,
+    borderRadius: 6,
+    padding: spacing.sm,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+  },
   submitText: { color: '#fff', fontWeight: '700' },
-  reviewItem: { borderTopWidth: 1, borderTopColor: colors.border, paddingVertical: spacing.sm, marginTop: spacing.sm },
+  reviewItem: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingVertical: spacing.sm,
+    marginTop: spacing.sm,
+  },
   reviewComment: { color: colors.textMuted, marginTop: 4 },
 });
