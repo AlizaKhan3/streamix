@@ -70,8 +70,23 @@ app.get('/catalog/search', async (req, res) => {
   const offset = (Number(page) - 1) * limit;
   const clauses = [];
   const params = [];
-  if (q) { params.push(`%${q}%`); clauses.push(`title ILIKE $${params.length}`); }
-  if (genre) { params.push(genre); clauses.push(`$${params.length} = ANY(genres)`); }
+  if (q) {
+    params.push(`%${q}%`);
+    const p = params.length;
+    // Title + director + cast JSON text (placeholder promised actors/directors)
+    clauses.push(`(title ILIKE $${p} OR COALESCE(director,'') ILIKE $${p} OR cast_members::text ILIKE $${p})`);
+  }
+  if (genre) {
+    // Accept common aliases (Sci-Fi → Science Fiction)
+    const genreAliases = {
+      'Sci-Fi': 'Science Fiction',
+      SciFi: 'Science Fiction',
+      SF: 'Science Fiction',
+    };
+    const g = genreAliases[String(genre)] || String(genre);
+    params.push(g);
+    clauses.push(`$${params.length} = ANY(genres)`);
+  }
   if (year) { params.push(Number(year)); clauses.push(`release_year = $${params.length}`); }
   if (language) { params.push(language); clauses.push(`language = $${params.length}`); }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
