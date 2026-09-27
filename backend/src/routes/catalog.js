@@ -1,5 +1,10 @@
 const router = require('express').Router();
-const { movieReadConn, allMovieReadConns } = require('../db/shardRouter');
+const { resolveRegion } = require('../middleware/region');
+const {
+  movieReadConn, allMovieReadConns, movieReadConnsByRegionPriority,
+} = require('../db/shardRouter');
+
+router.use(resolveRegion);
 
 /**
  * GET /catalog/movie/:id
@@ -13,7 +18,7 @@ router.get('/movie/:id', async (req, res) => {
       `SELECT * FROM movies WHERE content_id = $1`, [contentId]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Not found' });
-    res.json(rows[0]);
+    res.json({ ...rows[0], _clientRegion: req.clientRegion });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Lookup failed' });
@@ -21,13 +26,49 @@ router.get('/movie/:id', async (req, res) => {
 });
 
 /**
+ * GET /catalog/nearby — FAST single-shard path preferred for the client's
+ * region (from X-Client-Region). Falls back to the other shards if the
+ * preferred region returns nothing / is down.
+ */
+router.get('/nearby', async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 20, 50);
+  const ordered = movieReadConnsByRegionPriority(req.clientRegion);
+
+  try {
+    for (const shard of ordered) {
+      try {
+        const { rows } = await shard.conn.query(
+          `SELECT * FROM movies ORDER BY popularity DESC LIMIT $1`, [limit]
+        );
+        if (rows.length) {
+          return res.json({
+            regionPreferred: req.clientRegion,
+            regionServed: shard.region,
+            fallbackUsed: shard.region !== req.clientRegion,
+            results: rows.map((row) => ({ ...row, _region: shard.region })),
+          });
+        }
+      } catch (err) {
+        console.warn(`nearby: shard ${shard.region} failed, trying next`, err.message);
+      }
+    }
+    res.json({
+      regionPreferred: req.clientRegion,
+      regionServed: null,
+      fallbackUsed: true,
+      results: [],
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Nearby catalog failed' });
+  }
+});
+
+/**
  * GET /catalog/search?q=&genre=&year=&language=&sort=popularity|rating|year&page=1
  *
- * No single shard key applies to a free-text/filter search, so this is a
- * SCATTER-GATHER query: fan the same SQL out to every shard's replica in
- * parallel, merge the rows, sort/paginate in the application layer. This
- * is exactly the "controlled scatter-gather" described in section 6 of
- * the architecture document.
+ * SCATTER-GATHER: fan the same SQL out to every shard's replica in
+ * parallel (region-preferred order), merge, sort/paginate in the app layer.
  */
 router.get('/search', async (req, res) => {
   const { q, genre, year, language, sort = 'popularity', page = 1 } = req.query;
@@ -46,7 +87,7 @@ router.get('/search', async (req, res) => {
   const sql = `SELECT * FROM movies ${where} ORDER BY ${sortCol} DESC LIMIT 100`;
 
   try {
-    const shardConns = allMovieReadConns();
+    const shardConns = movieReadConnsByRegionPriority(req.clientRegion);
     const results = await Promise.allSettled(
       shardConns.map(({ conn, region, index }) =>
         conn.query(sql, params).then((r) => r.rows.map((row) => ({ ...row, _shard: index, _region: region })))
@@ -64,6 +105,7 @@ router.get('/search', async (req, res) => {
       total: merged.length,
       page: Number(page),
       results: page_,
+      clientRegion: req.clientRegion,
       shardsQueried: shardConns.length,
       shardsFailed: results.filter((r) => r.status === 'rejected').length,
     });
@@ -73,10 +115,10 @@ router.get('/search', async (req, res) => {
   }
 });
 
-/** GET /catalog/trending — same scatter-gather, fixed popularity sort. */
+/** GET /catalog/trending — scatter-gather with region-preferred shard order. */
 router.get('/trending', async (req, res) => {
   try {
-    const shardConns = allMovieReadConns();
+    const shardConns = movieReadConnsByRegionPriority(req.clientRegion);
     const results = await Promise.allSettled(
       shardConns.map(({ conn, region }) =>
         conn.query(`SELECT * FROM movies ORDER BY popularity DESC LIMIT 20`)

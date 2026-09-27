@@ -2,20 +2,39 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import HeroBanner from '../components/HeroBanner';
 import MovieRow from '../components/MovieRow';
-import { fetchTrending, searchCatalog } from '../services/api';
+import { fetchNearby, fetchRecommendations, fetchTrending, searchCatalog } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { colors } from '../theme/colors';
 
 export default function HomeScreen({ navigation }: any) {
+  const { user } = useAuth();
   const [trending, setTrending] = useState<any[]>([]);
+  const [nearby, setNearby] = useState<any[]>([]);
+  const [nearbyMeta, setNearbyMeta] = useState<string>('');
   const [byGenre, setByGenre] = useState<Record<string, any[]>>({});
+  const [recommended, setRecommended] = useState<any[]>([]);
+  const [recBasis, setRecBasis] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const genresToShow = ['Action', 'Comedy', 'Drama', 'Sci-Fi'];
 
   const load = useCallback(async () => {
-    const trendingData = await fetchTrending();
+    const [trendingData, nearbyData] = await Promise.all([
+      fetchTrending(),
+      fetchNearby(15).catch(() => ({ results: [], regionServed: null, fallbackUsed: false })),
+    ]);
     setTrending(trendingData);
+    setNearby(nearbyData.results || []);
+    if (nearbyData.regionServed) {
+      setNearbyMeta(
+        nearbyData.fallbackUsed
+          ? `fallback → ${nearbyData.regionServed}`
+          : `region ${nearbyData.regionServed}`
+      );
+    } else {
+      setNearbyMeta('');
+    }
 
     const entries = await Promise.all(
       genresToShow.map(async (g) => {
@@ -24,7 +43,21 @@ export default function HomeScreen({ navigation }: any) {
       })
     );
     setByGenre(Object.fromEntries(entries));
-  }, []);
+
+    if (user) {
+      try {
+        const rec = await fetchRecommendations();
+        setRecommended(rec.results || []);
+        setRecBasis(rec.basis || null);
+      } catch {
+        setRecommended([]);
+        setRecBasis(null);
+      }
+    } else {
+      setRecommended([]);
+      setRecBasis(null);
+    }
+  }, [user]);
 
   useEffect(() => {
     load().finally(() => setLoading(false));
@@ -65,9 +98,22 @@ export default function HomeScreen({ navigation }: any) {
         onSelect={(m) => navigation.navigate('MovieDetail', { contentId: m.content_id })}
       />
 
-      {/* "Recommended for you" — placeholder personalization: ranks the genres the
-          signed-in user's watchlist/reviews skew toward. Wire this to a real
-          recommender once the review/watchlist data has enough volume. */}
+      {recommended.length > 0 && (
+        <MovieRow
+          title={`Recommended for You${recBasis ? ` · ${recBasis}` : ''}`}
+          data={recommended}
+          onSelect={(m) => navigation.navigate('MovieDetail', { contentId: m.content_id })}
+        />
+      )}
+
+      {nearby.length > 0 && (
+        <MovieRow
+          title={`Near You${nearbyMeta ? ` · ${nearbyMeta}` : ''}`}
+          data={nearby}
+          onSelect={(m) => navigation.navigate('MovieDetail', { contentId: m.content_id })}
+        />
+      )}
+
       {Object.entries(byGenre).map(([genre, movies]) => (
         <MovieRow
           key={genre}

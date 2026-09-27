@@ -7,6 +7,7 @@ const catalogRoutes = require('./routes/catalog');
 const watchlistRoutes = require('./routes/watchlist');
 const reviewRoutes = require('./routes/reviews');
 const adminRoutes = require('./routes/admin');
+const recommendationRoutes = require('./routes/recommendations');
 
 const app = express();
 app.use(cors());
@@ -22,6 +23,7 @@ app.use('/catalog', catalogRoutes);
 app.use('/watchlist', watchlistRoutes);
 app.use('/reviews', reviewRoutes);
 app.use('/admin', adminRoutes);
+app.use('/recommendations', recommendationRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);

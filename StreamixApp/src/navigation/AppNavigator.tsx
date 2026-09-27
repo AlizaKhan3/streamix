@@ -14,6 +14,7 @@ import SearchScreen from '../screens/SearchScreen';
 import WatchlistScreen from '../screens/WatchlistScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import MovieDetailScreen from '../screens/MovieDetailScreen';
+import AdminScreen from '../screens/AdminScreen';
 
 const AuthStack = createNativeStackNavigator();
 const RootStack = createNativeStackNavigator();
@@ -60,6 +61,11 @@ function AppStack() {
         name="MovieDetail"
         component={MovieDetailScreen}
         options={{ headerShown: true, headerStyle: { backgroundColor: colors.background }, headerTintColor: colors.text, title: '' }}
+      />
+      <RootStack.Screen
+        name="Admin"
+        component={AdminScreen}
+        options={{ headerShown: true, headerStyle: { backgroundColor: colors.background }, headerTintColor: colors.text, title: 'Catalog Admin' }}
       />
     </RootStack.Navigator>
   );
