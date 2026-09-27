@@ -1,9 +1,10 @@
-import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { useRegion } from '../context/RegionContext';
 import { ClientRegion } from '../services/region';
+import { clearApiBaseUrlOverride, getApiBaseUrl, setApiBaseUrl } from '../services/api';
 import { colors, spacing } from '../theme/colors';
 
 const REGIONS: ClientRegion[] = ['US', 'EU'];
@@ -27,9 +28,34 @@ export default function ProfileScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { user, signOut } = useAuth();
   const { region, detectedRegion, exactLabel, setRegion, useDetected } = useRegion();
+  const [apiUrl, setApiUrl] = useState('');
+  const [savingApi, setSavingApi] = useState(false);
   const initial = user?.email?.[0]?.toUpperCase() || '?';
   const name = displayName(user?.email);
   const isAuto = region === detectedRegion;
+
+  useEffect(() => {
+    getApiBaseUrl().then(setApiUrl).catch(() => undefined);
+  }, []);
+
+  const saveApiUrl = async () => {
+    try {
+      setSavingApi(true);
+      await setApiBaseUrl(apiUrl);
+      Alert.alert('Saved', 'API URL updated. Pull to refresh Home if needed.');
+    } catch (e: any) {
+      Alert.alert('Invalid URL', e?.message || 'Could not save API URL');
+    } finally {
+      setSavingApi(false);
+    }
+  };
+
+  const resetApiUrl = async () => {
+    await clearApiBaseUrlOverride();
+    const next = await getApiBaseUrl();
+    setApiUrl(next);
+    Alert.alert('Reset', 'Using the URL baked into the APK.');
+  };
 
   return (
     <ScrollView
@@ -123,6 +149,37 @@ export default function ProfileScreen({ navigation }: any) {
 
         <Text style={styles.hint}>
           Near You routes to US or EU movie shards. Your device timezone maps to the nearest one.
+        </Text>
+      </View>
+
+      <Text style={styles.sectionTitle}>API server</Text>
+      <View style={styles.card}>
+        <TextInput
+          style={styles.apiInput}
+          value={apiUrl}
+          onChangeText={setApiUrl}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="https://….tunnelmole.net"
+          placeholderTextColor={colors.textMuted}
+        />
+        <View style={styles.apiActions}>
+          <Pressable
+            style={({ pressed }) => [styles.apiBtn, pressed && styles.rowPressed]}
+            onPress={saveApiUrl}
+            disabled={savingApi}
+          >
+            <Text style={styles.apiBtnText}>{savingApi ? 'Saving…' : 'Save URL'}</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.apiBtnGhost, pressed && styles.rowPressed]}
+            onPress={resetApiUrl}
+          >
+            <Text style={styles.resetText}>Reset</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.hint}>
+          If the tunnel URL changes, paste the new https URL here — no APK rebuild needed.
         </Text>
       </View>
 
@@ -237,6 +294,31 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
     paddingTop: spacing.xs,
   },
+  apiInput: {
+    marginHorizontal: spacing.md,
+    marginTop: spacing.md,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 6,
+    backgroundColor: colors.card,
+    color: colors.text,
+    fontSize: 13,
+  },
+  apiActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+  },
+  apiBtn: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 5,
+  },
+  apiBtnGhost: { paddingHorizontal: 12, paddingVertical: 10 },
+  apiBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   signOutBtn: {
     marginTop: spacing.sm,
     borderWidth: 1,

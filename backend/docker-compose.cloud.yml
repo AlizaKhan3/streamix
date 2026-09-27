@@ -1,0 +1,185 @@
+# =====================================================================================
+# CLOUD / VPS — leaner polyglot stack (same DDB concepts, fewer replicas = less RAM)
+# Still: Postgres user + US/EU movie shards, Mongo watchlist/reviews, Redis, 7 services
+# Usage on a VPS (Oracle Always Free / DigitalOcean / etc.):
+#   docker compose -f docker-compose.cloud.yml --env-file .env.cloud up -d --build
+# =====================================================================================
+
+services:
+  user-db-master:
+    image: bitnamilegacy/postgresql:16
+    environment:
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: user_db
+    volumes:
+      - user_data:/bitnami/postgresql
+      - ./sql/user_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  movie-shard-us-master:
+    image: bitnamilegacy/postgresql:16
+    environment:
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: movie_db
+    volumes:
+      - movie_us_data:/bitnami/postgresql
+      - ./sql/movie_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  movie-shard-eu-master:
+    image: bitnamilegacy/postgresql:16
+    environment:
+      POSTGRESQL_USERNAME: app
+      POSTGRESQL_PASSWORD: app_pass
+      POSTGRESQL_DATABASE: movie_db
+    volumes:
+      - movie_eu_data:/bitnami/postgresql
+      - ./sql/movie_schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  watchlist-mongo-1:
+    image: mongo:7
+    volumes: [wl1:/data/db]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  watchlist-mongo-2:
+    image: mongo:7
+    volumes: [wl2:/data/db]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  review-mongo-1:
+    image: mongo:7
+    volumes: [rv1:/data/db]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  review-mongo-2:
+    image: mongo:7
+    volumes: [rv2:/data/db]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  user-service:
+    build: .
+    command: ["node", "services/user-service/index.js"]
+    env_file: .env.cloud
+    environment: &svc
+      USER_DB_MASTER_HOST: user-db-master
+      USER_DB_MASTER_PORT: "5432"
+      USER_DB_REPLICA_HOST: user-db-master
+      USER_DB_REPLICA_PORT: "5432"
+      MOVIE_SHARD0_MASTER_HOST: movie-shard-us-master
+      MOVIE_SHARD0_MASTER_PORT: "5432"
+      MOVIE_SHARD0_REPLICA_HOST: movie-shard-us-master
+      MOVIE_SHARD0_REPLICA_PORT: "5432"
+      MOVIE_SHARD1_MASTER_HOST: movie-shard-eu-master
+      MOVIE_SHARD1_MASTER_PORT: "5432"
+      MOVIE_SHARD1_REPLICA_HOST: movie-shard-eu-master
+      MOVIE_SHARD1_REPLICA_PORT: "5432"
+      WATCHLIST_MONGO0_URI: mongodb://watchlist-mongo-1:27017/watchlist
+      WATCHLIST_MONGO1_URI: mongodb://watchlist-mongo-2:27017/watchlist
+      REVIEW_MONGO0_URI: mongodb://review-mongo-1:27017/reviews
+      REVIEW_MONGO1_URI: mongodb://review-mongo-2:27017/reviews
+      REDIS_URL: redis://redis:6379
+      USER_SERVICE_URL: http://user-service:4001
+      CATALOG_SERVICE_URL: http://catalog-service:4002
+      WATCHLIST_SERVICE_URL: http://watchlist-service:4003
+      REVIEW_SERVICE_URL: http://review-service:4004
+      RECOMMENDATION_SERVICE_URL: http://recommendation-service:4005
+      ANALYTICS_SERVICE_URL: http://analytics-service:4006
+    depends_on: [user-db-master]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  catalog-service:
+    build: .
+    command: ["node", "services/catalog-service/index.js"]
+    env_file: .env.cloud
+    environment:
+      <<: *svc
+    depends_on: [movie-shard-us-master, movie-shard-eu-master, redis]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  watchlist-service:
+    build: .
+    command: ["node", "services/watchlist-service/index.js"]
+    env_file: .env.cloud
+    environment:
+      <<: *svc
+    depends_on: [watchlist-mongo-1, watchlist-mongo-2]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  review-service:
+    build: .
+    command: ["node", "services/review-service/index.js"]
+    env_file: .env.cloud
+    environment:
+      <<: *svc
+    depends_on: [review-mongo-1, review-mongo-2, redis]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  recommendation-service:
+    build: .
+    command: ["node", "services/recommendation-service/index.js"]
+    env_file: .env.cloud
+    environment:
+      <<: *svc
+    depends_on: [watchlist-mongo-1, review-mongo-1, movie-shard-us-master]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  analytics-service:
+    build: .
+    command: ["node", "services/analytics-service/index.js"]
+    env_file: .env.cloud
+    environment:
+      <<: *svc
+    depends_on: [redis, review-mongo-1]
+    networks: [ddbnet]
+    restart: unless-stopped
+
+  gateway:
+    build: .
+    command: ["node", "services/gateway/index.js"]
+    env_file: .env.cloud
+    environment:
+      <<: *svc
+      PORT: "4000"
+    ports: ["4000:4000"]
+    depends_on:
+      - user-service
+      - catalog-service
+      - watchlist-service
+      - review-service
+      - recommendation-service
+      - analytics-service
+    networks: [ddbnet]
+    restart: unless-stopped
+
+networks:
+  ddbnet:
+    driver: bridge
+
+volumes:
+  user_data:
+  movie_us_data:
+  movie_eu_data:
+  wl1:
+  wl2:
+  rv1:
+  rv2:

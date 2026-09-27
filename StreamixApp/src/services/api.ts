@@ -1,19 +1,42 @@
-import { Platform } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_BASE_URL as DEFAULT_API_BASE_URL } from '../config';
 import { getClientRegion } from './region';
 
-// Android emulator → host machine via 10.0.2.2; iOS Simulator → localhost.
-// Physical device: replace with your Mac's LAN IP, e.g. http://192.168.x.x:4000
-export const API_BASE_URL =
-  Platform.OS === 'android' ? 'http://10.0.2.2:4000' : 'http://localhost:4000';
+const API_URL_KEY = 'api_base_url_override';
 
-export const api = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
+export { DEFAULT_API_BASE_URL as API_BASE_URL };
+
+export const api = axios.create({ baseURL: DEFAULT_API_BASE_URL, timeout: 20000 });
+
+/** Apply a saved override (call once at app start). */
+export async function initApiBaseUrl() {
+  const override = await AsyncStorage.getItem(API_URL_KEY);
+  if (override && override.startsWith('http')) {
+    api.defaults.baseURL = override.replace(/\/$/, '');
+  }
+}
+
+export async function getApiBaseUrl() {
+  const override = await AsyncStorage.getItem(API_URL_KEY);
+  return (override && override.startsWith('http') ? override : DEFAULT_API_BASE_URL).replace(/\/$/, '');
+}
+
+export async function setApiBaseUrl(url: string) {
+  const cleaned = url.trim().replace(/\/$/, '');
+  if (!cleaned.startsWith('http')) throw new Error('URL must start with http');
+  await AsyncStorage.setItem(API_URL_KEY, cleaned);
+  api.defaults.baseURL = cleaned;
+}
+
+export async function clearApiBaseUrlOverride() {
+  await AsyncStorage.removeItem(API_URL_KEY);
+  api.defaults.baseURL = DEFAULT_API_BASE_URL;
+}
 
 api.interceptors.request.use(async (config) => {
   const token = await AsyncStorage.getItem('auth_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
-  // Actual (or user-picked) region — drives /catalog/nearby + shard priority
   config.headers['X-Client-Region'] = await getClientRegion();
   return config;
 });

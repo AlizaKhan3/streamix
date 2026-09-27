@@ -3,10 +3,15 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getClientRegion } from './region';
 
-// Android emulator → host machine via 10.0.2.2; iOS Simulator → localhost.
-// Physical device: replace with your Mac's LAN IP, e.g. http://192.168.x.x:4000
+// Backend on your Mac. For a physical Android phone APK, use the Mac LAN IP
+// (same Wi‑Fi). Emulator can also reach it via this IP, or use 10.0.2.2.
+// Find IP: `ipconfig getifaddr en0`
+const LAN_HOST = '192.168.0.35';
+
 export const API_BASE_URL =
-  Platform.OS === 'android' ? 'http://10.0.2.2:4000' : 'http://localhost:4000';
+  Platform.OS === 'android'
+    ? `http://${LAN_HOST}:4000`
+    : 'http://localhost:4000';
 
 export const api = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
 
