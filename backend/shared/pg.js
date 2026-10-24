@@ -3,7 +3,17 @@ require('dotenv').config();
 const { Pool } = require('pg');
 
 function pool(host, port, database, user, password) {
-  return new Pool({ host, port: Number(port), database, user, password, max: 10 });
+  return new Pool({
+    host,
+    port: Number(port),
+    database,
+    user,
+    password,
+    max: Number(process.env.PG_POOL_MAX || 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS || 10_000),
+  });
 }
 
 const userDb = {
@@ -34,4 +44,14 @@ const movieShards = [
   },
 ];
 
-module.exports = { userDb, movieShards };
+async function pingPool(p) {
+  const client = await p.connect();
+  try {
+    await client.query('SELECT 1');
+    return { status: 'ok' };
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { userDb, movieShards, pingPool };

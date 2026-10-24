@@ -1,13 +1,20 @@
 require('dotenv').config();
+process.env.SERVICE_NAME = 'recommendation-service';
+
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const { requireAuth } = require('../../shared/auth');
 const { allMovieReadConns } = require('../../shared/movieShardRouter');
 const { watchlistCollection, allReviewCollections } = require('../../shared/mongoShards');
+const { errorHandler, requestLogger } = require('../../shared/middleware');
+const { log } = require('../../shared/logger');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+app.use(helmet());
+app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
+app.use(express.json({ limit: '32kb' }));
+app.use(requestLogger('recommendation-service'));
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'recommendation-service' }));
 
@@ -104,10 +111,12 @@ app.get('/recommendations', requireAuth, async (req, res) => {
       _sources: { watchlist: 'mongodb', reviews: 'mongodb', catalog: 'postgres' },
     });
   } catch (err) {
-    console.error(err);
+    log.error('recommendations_failed', { message: err.message });
     res.status(500).json({ error: 'Could not build recommendations' });
   }
 });
 
+app.use(errorHandler);
+
 const PORT = process.env.RECOMMENDATION_SERVICE_PORT || 4005;
-app.listen(PORT, () => console.log(`[recommendation-service] :${PORT}`));
+app.listen(PORT, () => log.info('listening', { service: 'recommendation-service', port: Number(PORT) }));

@@ -1,13 +1,18 @@
 // Redis: catalog cache + Streams event bus (Kafka stand-in for local demo).
 const Redis = require('ioredis');
+const { log } = require('./logger');
 
 let client;
 
 function getRedis() {
   if (!client) {
     const url = process.env.REDIS_URL || 'redis://localhost:6379';
-    client = new Redis(url, { maxRetriesPerRequest: 2 });
-    client.on('error', (err) => console.warn('[redis]', err.message));
+    client = new Redis(url, {
+      maxRetriesPerRequest: 2,
+      enableReadyCheck: true,
+      lazyConnect: false,
+    });
+    client.on('error', (err) => log.warn('redis_error', { message: err.message }));
   }
   return client;
 }
@@ -21,15 +26,15 @@ async function cacheGet(key) {
     const r = await ensureRedis();
     const val = await r.get(key);
     if (val) {
-      console.log(`[cache] HIT ${key}`);
+      log.debug('cache_hit', { key });
       await r.incr('stats:cache:hits').catch(() => {});
       return JSON.parse(val);
     }
-    console.log(`[cache] MISS ${key}`);
+    log.debug('cache_miss', { key });
     await r.incr('stats:cache:misses').catch(() => {});
     return null;
   } catch (err) {
-    console.warn('[cache] get failed', err.message);
+    log.warn('cache_get_failed', { message: err.message });
     return null;
   }
 }
@@ -39,17 +44,23 @@ async function cacheSet(key, value, ttlSec = 60) {
     const r = await ensureRedis();
     await r.set(key, JSON.stringify(value), 'EX', ttlSec);
   } catch (err) {
-    console.warn('[cache] set failed', err.message);
+    log.warn('cache_set_failed', { message: err.message });
   }
 }
 
+/** Production-safe delete by prefix (SCAN, never KEYS). */
 async function cacheDelPattern(prefix) {
   try {
     const r = await ensureRedis();
-    const keys = await r.keys(`${prefix}*`);
-    if (keys.length) await r.del(...keys);
+    const match = `${prefix}*`;
+    let cursor = '0';
+    do {
+      const [next, keys] = await r.scan(cursor, 'MATCH', match, 'COUNT', 100);
+      cursor = next;
+      if (keys.length) await r.del(...keys);
+    } while (cursor !== '0');
   } catch (err) {
-    console.warn('[cache] del failed', err.message);
+    log.warn('cache_del_failed', { message: err.message });
   }
 }
 
@@ -66,7 +77,7 @@ async function publishReviewEvent(payload) {
       await r.incr(`stats:reviews:shard:${payload.shardIndex}`).catch(() => {});
     }
   } catch (err) {
-    console.warn('[stream] publish failed', err.message);
+    log.warn('stream_publish_failed', { message: err.message });
   }
 }
 
@@ -91,6 +102,15 @@ async function getCacheStats() {
   }
 }
 
+async function pingRedis() {
+  try {
+    const pong = await ensureRedis().ping();
+    return { status: pong === 'PONG' ? 'ok' : 'down' };
+  } catch (err) {
+    return { status: 'down', error: err.message };
+  }
+}
+
 module.exports = {
   getRedis,
   ensureRedis,
@@ -99,5 +119,6 @@ module.exports = {
   cacheDelPattern,
   publishReviewEvent,
   getCacheStats,
+  pingRedis,
   REVIEW_STREAM,
 };

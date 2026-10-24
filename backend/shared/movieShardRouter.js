@@ -1,5 +1,6 @@
 const { shardIndex, hashKey } = require('./shardHash');
-const { userDb, movieShards } = require('./pg');
+const { userDb, movieShards, pingPool } = require('./pg');
+const { withRetry } = require('./retry');
 
 const NUM_MOVIE_SHARDS = movieShards.length;
 
@@ -32,6 +33,34 @@ function movieReadConnsByRegionPriority(preferredRegion) {
 const userWriteConn = () => userDb.primary;
 const userReadConn = () => userDb.replica || userDb.primary;
 
+/** Query with bounded retry — cushions transient replica blips. */
+async function queryWithRetry(pool, text, params) {
+  return withRetry(() => pool.query(text, params), { retries: 2, baseMs: 40, label: 'pg_query' });
+}
+
+async function healthMovieShards() {
+  const checks = await Promise.all(
+    movieShards.map(async (s, i) => {
+      try {
+        await pingPool(s.replica || s.primary);
+        return { shard: i, region: s.region, status: 'ok' };
+      } catch (err) {
+        return { shard: i, region: s.region, status: 'down', error: err.message };
+      }
+    })
+  );
+  return checks;
+}
+
+async function healthUserDb() {
+  try {
+    await pingPool(userDb.replica || userDb.primary);
+    return { status: 'ok' };
+  } catch (err) {
+    return { status: 'down', error: err.message };
+  }
+}
+
 module.exports = {
   NUM_MOVIE_SHARDS,
   hashKey,
@@ -43,4 +72,7 @@ module.exports = {
   movieReadConnsByRegionPriority,
   userWriteConn,
   userReadConn,
+  queryWithRetry,
+  healthMovieShards,
+  healthUserDb,
 };

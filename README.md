@@ -8,12 +8,12 @@ and a React Native (Netflix-style) mobile app on top.
 
 ```
 backend/                 Polyglot microservices + docker-compose cluster
-  docker-compose.yml       Postgres (users+movies) + Mongo (watchlist/reviews) + Redis + 7 Node services
-  shared/                  shard hash, auth, redis, pg pools, mongo shard helpers
+  docker-compose.yml       Postgres + Mongo + Redis + Elasticsearch + 7 Node services
+  shared/                  validators, auth, ES client, retry, redis, pg/mongo shard helpers
   services/
-    gateway/               :4000 path proxy (same URLs the mobile app already uses)
-    user-service/          Postgres auth (vertical fragmentation)
-    catalog-service/       Postgres US/EU movie shards + Redis cache
+    gateway/               :4000 path proxy + helmet + rate limits
+    user-service/          Postgres auth (vertical fragmentation) + email/password validation
+    catalog-service/       Postgres US/EU shards + Redis cache + Elasticsearch search
     watchlist-service/     MongoDB app-sharded by userId
     review-service/        MongoDB app-sharded by movieId + Redis Streams events
     recommendation-service/ Genre affinity across Mongo + Postgres
@@ -34,10 +34,13 @@ mobile-src/ / StreamixApp/ React Native Netflix-style client
 | **Replication (primary–replica)** | User DB + each movie shard — real Postgres WAL (Bitnami) |
 | **Read/write routing** | `shared/movieShardRouter.js` |
 | **Scatter-gather** | Catalog search/trending; review fan-out for recommendations |
-| **Cache** | Redis TTL on `/catalog/trending` and `/catalog/search` |
+| **Cache** | Redis TTL on `/catalog/trending` and `/catalog/search` (SCAN-based invalidation) |
+| **Full-text search** | Elasticsearch `movies` index; Postgres `to_tsvector` GIN as fallback |
+| **Input validation** | Shared regex validators (email/password/rating/search) in `shared/validators.js` |
+| **Security hardening** | Helmet, rate limits, bcrypt cost 12, internal-route secret |
 | **Event bus (Kafka stand-in)** | Redis Streams `reviews:events` published by review-service, consumed by analytics |
 | **Distribution transparency** | Mobile only talks to gateway; shard map is server-side |
-| **Fault isolation** | Separate DBs/services; scatter-gather uses `Promise.allSettled` |
+| **Fault isolation** | Separate DBs/services; scatter-gather + query retries |
 
 ### Designed but Phase-2 (say this boldly)
 
@@ -49,13 +52,16 @@ service today. See [backend/POLYglot-DEMO.md](backend/POLYglot-DEMO.md).
 
 1. Install Docker Desktop.
 2. `cd backend`
-3. `cp .env.example .env` and set `TMDB_API_KEY` + `JWT_SECRET`.
-4. `docker compose up -d --build` — Postgres + Mongo + Redis + all services; gateway on **port 4000**.
+3. `cp .env.example .env` and set `TMDB_API_KEY`, `JWT_SECRET`, and `INTERNAL_SERVICE_SECRET`.
+4. `docker compose up -d --build` — Postgres + Mongo + Redis + Elasticsearch + all services; gateway on **port 4000**.
 5. Promote an admin:  
    `docker exec -e PGPASSWORD=app_pass user-db-master psql -U app -d user_db -c "UPDATE users_auth SET role='admin' WHERE email='you@example.com';"`  
    then **re-login** in the app.
-6. Seed movies via Admin screen or `POST /admin/movies/sync`.
-7. Health: `GET http://localhost:4000/health` (lists every microservice).
+6. Seed movies via Admin screen or `POST /admin/movies/sync` (also indexes into Elasticsearch).
+7. Optional reindex: `POST /admin/movies/reindex` (admin JWT).
+8. Health: `GET http://localhost:4000/health` (lists every microservice + ES status on catalog).
+
+**Password rules:** ≥8 chars, at least one letter and one number. Invalid register/login returns field-level `details`.
 
 **Host Node + Docker DBs:** start only data containers, then `npm install && npm start` (spawns all 7 processes; gateway still `:4000`).
 

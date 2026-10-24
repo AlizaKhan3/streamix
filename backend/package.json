@@ -1,22 +1,25 @@
 {
   "name": "ddb-movie-streaming-backend",
-  "version": "2.0.0",
-  "description": "Polyglot microservices: Postgres + MongoDB + Redis behind an API gateway",
+  "version": "2.1.0",
+  "description": "Polyglot microservices: Postgres + MongoDB + Redis + Elasticsearch behind an API gateway",
   "main": "services/gateway/index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node scripts/start-all.js",
     "start:gateway": "node services/gateway/index.js",
     "dev": "node scripts/start-all.js",
-    "test": "node --test ./test/shardRouter.test.js",
+    "test": "node --test ./test/shardRouter.test.js ./test/validators.test.js",
     "seed": "node scripts/seedMovies.js"
   },
   "dependencies": {
+    "@elastic/elasticsearch": "^8.15.0",
     "axios": "^1.7.7",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
     "http-proxy-middleware": "^3.0.3",
     "ioredis": "^5.4.2",
     "jsonwebtoken": "^9.0.2",

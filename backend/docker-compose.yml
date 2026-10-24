@@ -1,10 +1,11 @@
 # =====================================================================================
 # POLYGLOT DISTRIBUTED MOVIE STREAMING — local free stack
 # =====================================================================================
-# Postgres  : users (P/R) + movie shards US/EU (P/R each)     — relational
-# MongoDB   : watchlist (2 app-shards) + reviews (2 app-shards) — document
-# Redis     : catalog cache + Streams event bus (Kafka stand-in)
-# Services  : gateway :4000 + user/catalog/watchlist/review/recommendation/analytics
+# Postgres       : users (P/R) + movie shards US/EU (P/R each)     — relational
+# MongoDB        : watchlist (2 app-shards) + reviews (2 app-shards) — document
+# Redis          : catalog cache + Streams event bus (Kafka stand-in)
+# Elasticsearch  : full-text catalog search (FTS fallback → Postgres)
+# Services       : gateway :4000 + user/catalog/watchlist/review/recommendation/analytics
 # =====================================================================================
 
 services:
@@ -133,6 +134,23 @@ services:
     ports: ["6379:6379"]
     networks: [ddbnet]
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: ddb-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["9200:9200"]
+    volumes: [es_data:/usr/share/elasticsearch/data]
+    networks: [ddbnet]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   user-service:
     build: .
     container_name: ddb-user-service
@@ -156,6 +174,8 @@ services:
       REVIEW_MONGO0_URI: mongodb://review-mongo-1:27017/reviews
       REVIEW_MONGO1_URI: mongodb://review-mongo-2:27017/reviews
       REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_INDEX: movies
       USER_SERVICE_URL: http://user-service:4001
       CATALOG_SERVICE_URL: http://catalog-service:4002
       WATCHLIST_SERVICE_URL: http://watchlist-service:4003
@@ -172,7 +192,7 @@ services:
     env_file: .env
     environment:
       <<: *svc-env
-    depends_on: [movie-shard-us-master, movie-shard-eu-master, redis]
+    depends_on: [movie-shard-us-master, movie-shard-eu-master, redis, elasticsearch]
     networks: [ddbnet]
 
   watchlist-service:
@@ -245,3 +265,4 @@ volumes:
   watchlist_mongo2_data:
   review_mongo1_data:
   review_mongo2_data:
+  es_data:

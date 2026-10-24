@@ -6,11 +6,13 @@ Use this for viva to prove the architecture diagram is backed by running code.
 
 | Layer | Tech |
 |---|---|
-| API Gateway | Express proxy `:4000` |
+| API Gateway | Express proxy `:4000` + helmet + rate limits |
 | User + Catalog | Postgres (primary/replica, US/EU movie shards) |
+| Full-text search | Elasticsearch (`movies` index; Postgres FTS fallback) |
 | Watchlist + Reviews | MongoDB (2 app-level shards each) |
 | Cache + events | Redis (GET/SET cache + Streams as Kafka stand-in) |
 | Analytics | Aggregates from Mongo + Redis (ClickHouse stand-in) |
+| Validation | Shared regex validators (email / password / rating / search) |
 
 **Not installed (Phase-2 scale-out):** Kafka cluster, Milvus/Pinecone, ClickHouse, Mongo `mongos` cluster.
 
@@ -29,8 +31,29 @@ Or: infra in Docker, Node on host:
 docker compose up -d user-db-master user-db-replica \
   movie-shard-us-master movie-shard-us-replica \
   movie-shard-eu-master movie-shard-eu-replica \
-  watchlist-mongo-1 watchlist-mongo-2 review-mongo-1 review-mongo-2 redis
+  watchlist-mongo-1 watchlist-mongo-2 review-mongo-1 review-mongo-2 redis elasticsearch
 npm install && npm start
+```
+
+### Auth validation demo
+
+```bash
+# weak password → 400 with field details
+curl -s -X POST http://localhost:4000/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"bad","password":"short"}' | jq
+
+# valid register
+curl -s -X POST http://localhost:4000/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"demo@streamix.io","password":"Secret123","fullName":"Demo User"}' | jq
+```
+
+### Search engine demo
+
+```bash
+# After syncing movies (admin), search response includes "engine":"elasticsearch" (or postgres-fts fallback)
+curl -s 'http://localhost:4000/catalog/search?q=matrix' | jq '{total, engine, first: .results[0].title}'
 ```
 
 ## Demo curls
