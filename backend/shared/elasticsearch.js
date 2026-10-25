@@ -124,12 +124,23 @@ async function searchMovies({ q, genre, year, language, sort = 'popularity', pag
   const filter = [];
 
   if (q) {
+    // Prefer exact/phrase title hits; light fuzziness only as a soft should-clause
     must.push({
-      multi_match: {
-        query: q,
-        fields: ['title^3', 'director^2', 'cast_members^2', 'overview', 'genres'],
-        type: 'best_fields',
-        fuzziness: 'AUTO',
+      bool: {
+        should: [
+          { match_phrase: { title: { query: q, boost: 8 } } },
+          { match: { title: { query: q, operator: 'and', boost: 5 } } },
+          {
+            multi_match: {
+              query: q,
+              fields: ['title^3', 'director^2', 'cast_members^2', 'overview'],
+              type: 'best_fields',
+              fuzziness: q.length >= 5 ? 'AUTO' : 0,
+              prefix_length: 2,
+            },
+          },
+        ],
+        minimum_should_match: 1,
       },
     });
   } else {
@@ -139,11 +150,15 @@ async function searchMovies({ q, genre, year, language, sort = 'popularity', pag
   if (year) filter.push({ term: { release_year: year } });
   if (language) filter.push({ term: { language } });
 
+  // Text query → relevance first; browse/filter → popularity (or requested sort)
   const sortMap = {
     popularity: [{ popularity: 'desc' }, { _score: 'desc' }],
     rating_avg: [{ rating_avg: 'desc' }, { _score: 'desc' }],
     release_year: [{ release_year: 'desc' }, { _score: 'desc' }],
   };
+  const sortClause = q
+    ? [{ _score: 'desc' }, { popularity: 'desc' }]
+    : (sortMap[sort] || sortMap.popularity);
 
   try {
     const from = (page - 1) * size;
@@ -152,7 +167,7 @@ async function searchMovies({ q, genre, year, language, sort = 'popularity', pag
       from,
       size,
       query: { bool: { must, filter } },
-      sort: sortMap[sort] || sortMap.popularity,
+      sort: sortClause,
     });
     const hits = result.hits?.hits || [];
     const total = typeof result.hits?.total === 'object'
