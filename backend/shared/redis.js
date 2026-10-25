@@ -104,11 +104,36 @@ async function getCacheStats() {
 
 async function pingRedis() {
   try {
-    const pong = await ensureRedis().ping();
+    const r = await ensureRedis();
+    const pong = await r.ping();
     return { status: pong === 'PONG' ? 'ok' : 'down' };
   } catch (err) {
     return { status: 'down', error: err.message };
   }
+}
+
+/**
+ * Distributed lock for registration (diagram: "Redis — Cache + username lock").
+ * SET key NX EX — only one concurrent register for the same email can proceed.
+ */
+async function acquireEmailLock(email, ttlSec = 15) {
+  try {
+    const r = await ensureRedis();
+    const key = `lock:register:email:${String(email).toLowerCase()}`;
+    const ok = await r.set(key, String(Date.now()), 'EX', ttlSec, 'NX');
+    return { acquired: ok === 'OK', key };
+  } catch (err) {
+    log.warn('email_lock_failed', { message: err.message });
+    // Fail open if Redis is down — Postgres UNIQUE still protects integrity
+    return { acquired: true, key: null, degraded: true };
+  }
+}
+
+async function releaseEmailLock(key) {
+  if (!key) return;
+  try {
+    await ensureRedis().del(key);
+  } catch (_) { /* ignore */ }
 }
 
 module.exports = {
@@ -120,5 +145,7 @@ module.exports = {
   publishReviewEvent,
   getCacheStats,
   pingRedis,
+  acquireEmailLock,
+  releaseEmailLock,
   REVIEW_STREAM,
 };

@@ -12,6 +12,7 @@ const { validateRegisterBody, validateLoginBody } = require('../../shared/valida
 const { asyncHandler, errorHandler, requestLogger } = require('../../shared/middleware');
 const { assertJwtSecret } = require('../../shared/config');
 const { log } = require('../../shared/logger');
+const { acquireEmailLock, releaseEmailLock } = require('../../shared/redis');
 
 assertJwtSecret('user-service');
 
@@ -39,6 +40,12 @@ app.get('/health', asyncHandler(async (_req, res) => {
 
 app.post('/auth/register', authLimiter, asyncHandler(async (req, res) => {
   const { email, password, fullName } = validateRegisterBody(req.body);
+
+  // Diagram: Redis "username lock" — serialize concurrent register for same email
+  const lock = await acquireEmailLock(email);
+  if (!lock.acquired) {
+    return res.status(409).json({ error: 'Registration already in progress for this email' });
+  }
 
   let client;
   try {
@@ -72,6 +79,7 @@ app.post('/auth/register', authLimiter, asyncHandler(async (req, res) => {
     throw err;
   } finally {
     if (client) client.release();
+    await releaseEmailLock(lock.key);
   }
 }));
 

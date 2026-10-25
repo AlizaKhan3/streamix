@@ -60,7 +60,12 @@ app.get('/analytics/summary', async (_req, res) => {
     } catch { /* ignore */ }
 
     res.json({
-      note: 'ClickHouse stand-in: aggregates from Mongo review shards + Redis counters/Streams',
+      note: 'ClickHouse stand-in (diagram Analytics → ClickHouse): aggregates from Mongo review shards + Redis counters/Streams',
+      architectureMap: {
+        kafkaStandIn: `Redis Streams ${REVIEW_STREAM}`,
+        clickHouseStandIn: 'this service + Redis counters',
+        redisRole: 'cache + username lock + event bus',
+      },
       topology: {
         movieShardsPostgres: NUM_MOVIE_SHARDS,
         watchlistShardsMongo: NUM_WATCHLIST_SHARDS,
@@ -74,9 +79,10 @@ app.get('/analytics/summary', async (_req, res) => {
       },
       mongoReviewCountsByShard: mongoCounts,
       polyglot: {
-        postgres: ['users', 'movies'],
-        mongodb: ['watchlist', 'reviews'],
-        redis: ['catalog cache', 'event bus (Streams)'],
+        postgres: ['users (P/R vertical split)', 'movies (US/EU horizontal shards)'],
+        mongodb: ['watchlist (shard by userId)', 'reviews (shard by movieId)'],
+        redis: ['catalog cache', 'email register lock', 'Kafka stand-in (Streams)'],
+        elasticsearch: ['catalog full-text search'],
       },
     });
   } catch (err) {

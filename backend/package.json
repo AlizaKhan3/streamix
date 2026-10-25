@@ -9,7 +9,8 @@
     "start:gateway": "node services/gateway/index.js",
     "dev": "node scripts/start-all.js",
     "test": "node --test ./test/shardRouter.test.js ./test/validators.test.js",
-    "seed": "node scripts/seedMovies.js"
+    "seed": "node scripts/seedMovies.js",
+    "seed:bulk": "node scripts/seedBulk.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.15.0",

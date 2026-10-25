@@ -82,6 +82,7 @@ app.get('/recommendations', requireAuth, async (req, res) => {
       const merged = results.filter((r) => r.status === 'fulfilled').flatMap((r) => r.value.rows);
       return res.json({
         basis: 'trending (cold start — no watchlist/review data yet)',
+        note: 'Milvus/Pinecone stand-in (diagram): genre-affinity scoring instead of vector similarity',
         results: merged.slice(0, 20),
         _sources: { watchlist: 'mongodb', reviews: 'mongodb', catalog: 'postgres' },
       });
@@ -107,6 +108,7 @@ app.get('/recommendations', requireAuth, async (req, res) => {
 
     res.json({
       basis: `weighted on genres: ${topGenres.join(', ')}`,
+      note: 'Milvus/Pinecone stand-in (diagram): genre-affinity scoring instead of vector similarity',
       results: scored.slice(0, 20),
       _sources: { watchlist: 'mongodb', reviews: 'mongodb', catalog: 'postgres' },
     });
