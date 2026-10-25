@@ -3,13 +3,16 @@
  * Used by all microservices — keep rules in one place for viva/report.
  */
 
+/**
+ * Stricter than bare RFC: local-part ≥2, each domain label ≥2, TLD ≥2.
+ * Rejects toys like a@a.com / a@b.co.
+ */
 const EMAIL_RE =
-  /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+  /^[a-zA-Z0-9](?:[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]{0,62}[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
-/** Min 8, max 128; at least one letter + one digit. */
-const PASSWORD_RE = /^(?=.*[A-Za-z])(?=.*\d).{8,128}$/;
-
-const FULL_NAME_RE = /^[\p{L}\p{M}' .\-]{1,100}$/u;
+/** Min 8; upper + lower + digit + special. */
+const PASSWORD_SPECIAL_RE = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/;
+const FULL_NAME_RE = /^[\p{L}\p{M}' .\-]{2,100}$/u;
 
 class ValidationError extends Error {
   constructor(message, details = []) {
@@ -24,6 +27,26 @@ function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
 
+function isStrictEmail(value) {
+  if (!EMAIL_RE.test(value)) return false;
+  const at = value.lastIndexOf('@');
+  if (at < 2) return false; // local part at least 2 chars
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (local.length < 2) return false;
+  if (local.startsWith('.') || local.endsWith('.') || local.includes('..')) return false;
+  const labels = domain.split('.');
+  if (labels.length < 2) return false;
+  const tld = labels[labels.length - 1];
+  if (tld.length < 2 || !/^[a-z]+$/i.test(tld)) return false;
+  // Every label (including domain name before TLD) must be ≥ 2 chars — blocks a@a.com
+  for (const label of labels) {
+    if (label.length < 2) return false;
+    if (label.startsWith('-') || label.endsWith('-')) return false;
+  }
+  return true;
+}
+
 function validateEmail(email, { required = true } = {}) {
   const value = normalizeEmail(email);
   if (!value) {
@@ -31,7 +54,9 @@ function validateEmail(email, { required = true } = {}) {
     return { ok: true, value: null };
   }
   if (value.length > 254) return { ok: false, error: 'Email must be at most 254 characters' };
-  if (!EMAIL_RE.test(value)) return { ok: false, error: 'Invalid email format' };
+  if (!isStrictEmail(value)) {
+    return { ok: false, error: 'Enter a valid email like name@example.com (not a@a.com)' };
+  }
   return { ok: true, value };
 }
 
@@ -43,19 +68,38 @@ function validatePassword(password, { required = true } = {}) {
   }
   if (value.length < 8) return { ok: false, error: 'Password must be at least 8 characters' };
   if (value.length > 128) return { ok: false, error: 'Password must be at most 128 characters' };
-  if (!PASSWORD_RE.test(value)) {
+  if (!/[a-z]/.test(value)) {
+    return { ok: false, error: 'Password must include a lowercase letter' };
+  }
+  if (!/[A-Z]/.test(value)) {
+    return { ok: false, error: 'Password must include an uppercase letter' };
+  }
+  if (!/\d/.test(value)) {
+    return { ok: false, error: 'Password must include a number' };
+  }
+  if (!PASSWORD_SPECIAL_RE.test(value)) {
     return {
       ok: false,
-      error: 'Password must include at least one letter and one number',
+      error: 'Password must include a special character (!@#$%^&* etc.)',
     };
   }
   return { ok: true, value };
 }
 
-function validateFullName(fullName) {
-  if (fullName == null || String(fullName).trim() === '') return { ok: true, value: null };
+function validateFullName(fullName, { required = false } = {}) {
+  if (fullName == null || String(fullName).trim() === '') {
+    if (required) return { ok: false, error: 'Full name is required (at least 2 letters)' };
+    return { ok: true, value: null };
+  }
   const value = String(fullName).trim();
+  if (value.length < 2) {
+    return { ok: false, error: 'Full name must be at least 2 characters' };
+  }
   if (value.length > 100) return { ok: false, error: 'Full name must be at most 100 characters' };
+  const letters = (value.match(/\p{L}/gu) || []).length;
+  if (letters < 2) {
+    return { ok: false, error: 'Full name must contain at least 2 letters' };
+  }
   if (!FULL_NAME_RE.test(value)) {
     return { ok: false, error: 'Full name contains invalid characters' };
   }
@@ -64,12 +108,12 @@ function validateFullName(fullName) {
 
 function validateRegisterBody(body = {}) {
   const details = [];
+  const fullName = validateFullName(body.fullName, { required: true });
+  if (!fullName.ok) details.push({ field: 'fullName', message: fullName.error });
   const email = validateEmail(body.email);
   if (!email.ok) details.push({ field: 'email', message: email.error });
   const password = validatePassword(body.password);
   if (!password.ok) details.push({ field: 'password', message: password.error });
-  const fullName = validateFullName(body.fullName);
-  if (!fullName.ok) details.push({ field: 'fullName', message: fullName.error });
   if (details.length) throw new ValidationError('Validation failed', details);
   return { email: email.value, password: password.value, fullName: fullName.value };
 }
@@ -178,7 +222,7 @@ function validateWatchlistBody(body = {}) {
 
 module.exports = {
   EMAIL_RE,
-  PASSWORD_RE,
+  PASSWORD_SPECIAL_RE,
   ValidationError,
   normalizeEmail,
   validateEmail,
