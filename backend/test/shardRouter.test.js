@@ -41,8 +41,7 @@ test('movieShardFor distributes a spread of ids across all shards (no shard star
 
 test('watchlistShardFor and reviewShardFor are stable per key', () => {
   const userId = 'user-abc-123';
-  const first = watchlistShardFor(userId).index;
-  assert.equal(watchlistShardFor(userId).index, first);
+  const first = watchlistShardFor(userId).rd).index, first);
 
   const movieId = 999;
   const firstReview = reviewShardFor(movieId).index;

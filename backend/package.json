@@ -10,7 +10,9 @@
     "dev": "node scripts/start-all.js",
     "test": "node --test ./test/shardRouter.test.js ./test/validators.test.js",
     "seed": "node scripts/seedMovies.js",
-    "seed:bulk": "node scripts/seedBulk.js"
+    "seed:bulk": "node scripts/seedBulk.js",
+    "seed:million": "node scripts/seedMillion.js",
+    "seed:sessions": "node scripts/seedStreamingSessions.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.15.0",
